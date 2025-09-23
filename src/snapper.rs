@@ -5,6 +5,9 @@ use std::{fs, process::Command};
 pub struct Snapshot {
     pub id: u64,
     pub config: String,
+    // 'type' is a reserved word in Rust; use 'kind' to represent snapper's Type column
+    pub kind: String,
+    pub cleanup: String,
     pub date: String,
     pub description: String,
 }
@@ -123,24 +126,26 @@ impl Snapper {
                     .collect();
                 if parts.len() >= 7 {
                     if let Ok(id) = parts[0].parse::<u64>() {
+                        let kind = parts.get(1).copied().unwrap_or("").to_string();
                         let date = parts.get(3).unwrap_or(&"").to_string();
+                        let cleanup = parts.get(5).copied().unwrap_or("").to_string();
                         let mut description = parts.get(6).copied().unwrap_or("").to_string();
                         if description.is_empty() {
                             // fallback to type or cleanup hint if description missing
-                            let type_col = parts.get(1).copied().unwrap_or("");
-                            let cleanup = parts.get(5).copied().unwrap_or("");
                             description = if !cleanup.is_empty() && cleanup != "-" { format!("[{}]", cleanup) }
-                                          else if !type_col.is_empty() && type_col != "-" { format!("[{}]", type_col) }
+                                          else if !kind.is_empty() && kind != "-" { format!("[{}]", kind) }
                                           else { String::from("(no description)") };
                         }
-                        snaps.push(Snapshot { id, config: config.to_string(), date, description });
+                        snaps.push(Snapshot { id, config: config.to_string(), kind, cleanup, date, description });
                     }
                 } else if parts.len() >= 4 {
                     if let Ok(id) = parts[0].parse::<u64>() {
+                        let kind = parts.get(1).copied().unwrap_or("").to_string();
                         let date = parts.get(3).unwrap_or(&"").to_string();
                         let description = parts.last().copied().unwrap_or("").to_string();
                         let description = if description.is_empty() { String::from("(no description)") } else { description };
-                        snaps.push(Snapshot { id, config: config.to_string(), date, description });
+                        let cleanup = String::new();
+                        snaps.push(Snapshot { id, config: config.to_string(), kind, cleanup, date, description });
                     }
                 }
             }
@@ -178,11 +183,18 @@ impl Snapper {
                                 String::from("(no description)")
                             };
                         }
-                        snaps.push(Snapshot { id, config: config.to_string(), date: date.to_string(), description });
+                        snaps.push(Snapshot {
+                            id,
+                            config: config.to_string(),
+                            kind: type_col.to_string(),
+                            cleanup: cleanup_col.to_string(),
+                            date: date.to_string(),
+                            description,
+                        });
                     } else if let (Some(date), Some(desc)) = (c2, c3) {
                         // Fallback for three columns: number | date | description
                         let description = if desc.is_empty() { String::from("(no description)") } else { desc.to_string() };
-                        snaps.push(Snapshot { id, config: config.to_string(), date: date.to_string(), description });
+                        snaps.push(Snapshot { id, config: config.to_string(), kind: String::new(), cleanup: String::new(), date: date.to_string(), description });
                     }
                 }
             }

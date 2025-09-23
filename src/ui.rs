@@ -80,12 +80,14 @@ fn draw_snapshots_fullscreen(frame: &mut Frame, area: Rect, app: &App) {
     let rows: Vec<Row> = app.filtered_snaps.iter().map(|s| {
         Row::new(vec![
             Cell::from(format!("{}", s.id)),
+            Cell::from(s.kind.clone()),
+            Cell::from(s.cleanup.clone()),
             Cell::from(s.date.clone()),
             Cell::from(s.description.clone()),
         ])
     }).collect();
-    let table = Table::new(rows, [Constraint::Length(6), Constraint::Length(28), Constraint::Min(10)])
-        .header(Row::new(vec![Cell::from("#"), Cell::from("Date"), Cell::from("Description")])
+    let table = Table::new(rows, [Constraint::Length(6), Constraint::Length(10), Constraint::Length(14), Constraint::Length(28), Constraint::Min(10)])
+        .header(Row::new(vec![Cell::from("#"), Cell::from("Type"), Cell::from("Cleanup"), Cell::from("Date"), Cell::from("Description")])
             .style(THEME.header_style().bg(THEME.header_bg)))
         .block(block)
         .highlight_style(THEME.highlight_style())
@@ -143,12 +145,14 @@ fn draw_left(frame: &mut Frame, area: Rect, app: &App) {
         let rows: Vec<Row> = app.filtered_snaps.iter().map(|s| {
             Row::new(vec![
                 Cell::from(format!("{}", s.id)),
+                Cell::from(s.kind.clone()),
+                Cell::from(s.cleanup.clone()),
                 Cell::from(s.date.clone()),
                 Cell::from(s.description.clone()),
             ])
         }).collect();
-        let table = Table::new(rows, [Constraint::Length(6), Constraint::Length(28), Constraint::Min(10)])
-            .header(Row::new(vec![Cell::from("#"), Cell::from("Date"), Cell::from("Description")])
+        let table = Table::new(rows, [Constraint::Length(6), Constraint::Length(10), Constraint::Length(14), Constraint::Length(28), Constraint::Min(10)])
+            .header(Row::new(vec![Cell::from("#"), Cell::from("Type"), Cell::from("Cleanup"), Cell::from("Date"), Cell::from("Description")])
                 .style(THEME.header_style().bg(THEME.header_bg)))
             .block(block)
             .highlight_style(THEME.highlight_style())
@@ -184,6 +188,8 @@ fn draw_right(frame: &mut Frame, area: Rect, app: &App) {
                 Span::raw(&s.config),
                 Span::raw(")"),
             ]));
+            lines.push(Line::from(format!("Type: {}", if s.kind.is_empty() { "-" } else { s.kind.as_str() })));
+            lines.push(Line::from(format!("Cleanup: {}", if s.cleanup.is_empty() { "-" } else { s.cleanup.as_str() })));
             lines.push(Line::from(format!("Date: {}", s.date)));
             lines.push(Line::from(format!("Description: {}", s.description)));
         }
@@ -231,8 +237,8 @@ fn centered_rect_fixed(r: Rect, width: u16, height: u16) -> Rect {
 fn draw_input_modal(frame: &mut Frame, app: &App, kind: &InputKind) {
     // Use a very compact modal for Filter (similar to a password box)
     let area = match kind {
-        InputKind::Filter | InputKind::ConfigFieldEdit(_) => centered_rect_fixed(frame.size(), 50, 5),
-        _ => centered_rect(frame.size(), 60, 30),
+        // All input/edit boxes use the same compact fixed size now
+        _ => centered_rect_fixed(frame.size(), 50, 5),
     };
     frame.render_widget(Clear, area); // clear background
     let title = match kind {
@@ -243,31 +249,16 @@ fn draw_input_modal(frame: &mut Frame, app: &App, kind: &InputKind) {
         InputKind::ConfigFieldEdit(idx) => Box::leak(format!("Edit value for field #{}", idx + 1).into_boxed_str()),
         InputKind::Filter => "Filter snapshots",
     };
-    let bottom = match kind {
-        InputKind::Filter | InputKind::ConfigFieldEdit(_) => "Enter · Esc",
-        _ => "Enter to submit  ·  Esc to cancel",
-    };
+    let bottom = "Enter · Esc";
     let block = THEME.modal_warn_block(title)
         .title_bottom(Line::from(bottom).centered());
     frame.render_widget(block.clone(), area);
     let content_area = block.inner(area);
 
-    // Draw a bordered input box (for non-Filter) or use the modal content area directly (for Filter)
-    let field_label = match kind {
-        InputKind::Create | InputKind::Edit(_) => "Description",
-        InputKind::CleanupAlgorithm => "Algorithm",
-        InputKind::DetailsSearch => "Search",
-        InputKind::ConfigFieldEdit(_) => "Value",
-        InputKind::Filter => "Filter",
-    };
+    // We keep a single border for all inputs; labels are implied by the title now.
     // For Filter keep a single border (modal block) to reduce height; otherwise draw an inner input block
-    let input_area = if matches!(kind, InputKind::Filter | InputKind::ConfigFieldEdit(_)) {
-        content_area
-    } else {
-        let input_block = THEME.inner_block(field_label);
-        frame.render_widget(input_block.clone(), content_area);
-        input_block.inner(content_area)
-    };
+    // Keep a single border (modal block) for all inputs for a tighter layout
+    let input_area = content_area;
 
     // Placeholder when empty
     let placeholder = match kind {

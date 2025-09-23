@@ -1153,7 +1153,13 @@ impl App {
             self.filtered_snaps = self
                 .snapshots
                 .iter()
-                .filter(|s| s.description.to_lowercase().contains(&q) || s.date.to_lowercase().contains(&q) || s.id.to_string().contains(&q))
+                .filter(|s|
+                    s.description.to_lowercase().contains(&q)
+                    || s.date.to_lowercase().contains(&q)
+                    || s.kind.to_lowercase().contains(&q)
+                    || s.cleanup.to_lowercase().contains(&q)
+                    || s.id.to_string().contains(&q)
+                )
                 .cloned()
                 .collect();
         }
