@@ -1,0 +1,26 @@
+# Rust
+/target/
+**/*.rs.bk
+**/*.rs.bk.*
+# For binary apps, keep Cargo.lock tracked (do not ignore)
+
+# Logs / temp / swap / backups
+**/*.log
+**/*.tmp
+**/*.temp
+*.swp
+*.swo
+*.bak
+*~
+
+# Editor/OS
+.DS_Store
+.idea/
+.vscode/
+*.iml
+
+# Other common local artifacts
+.cache/
+coverage/
+perf.data*
+*.profraw
