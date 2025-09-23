@@ -2,7 +2,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap, Clear, Table, Row, Cell, TableState, Scrollbar, ScrollbarState, ScrollbarOrientation},
+    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap, Clear, Table, Row, Cell, TableState, Scrollbar, ScrollbarState, ScrollbarOrientation, Tabs},
     Frame,
 };
 use unicode_width::UnicodeWidthStr;
@@ -11,27 +11,22 @@ use crate::app::{App, Focus, Mode, InputKind};
 use crate::theme::THEME;
 
 pub fn draw(frame: &mut Frame, app: &App) {
+    // Layout: [tabs][main][status][userdata?]
+    let mut constraints: Vec<Constraint> = vec![Constraint::Length(3), Constraint::Min(1), Constraint::Length(1)];
+    if app.show_userdata { constraints.push(Constraint::Length(3)); }
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Min(1),  // main
-            Constraint::Length(1), // status
-        ])
+        .constraints(constraints)
         .split(frame.size());
 
-    if app.snaps_fullscreen {
-        draw_snapshots_fullscreen(frame, chunks[0], app);
-    } else {
-        let main_chunks = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Percentage(35), // left pane: configs/snapshots list
-                Constraint::Percentage(65), // right pane: details
-            ])
-            .split(chunks[0]);
+    // Top tabs for configs
+    draw_config_tabs(frame, chunks[0], app);
 
-        draw_left(frame, main_chunks[0], app);
-        draw_right(frame, main_chunks[1], app);
+    if app.snaps_fullscreen {
+        draw_snapshots_fullscreen(frame, chunks[1], app);
+    } else {
+        // SnapperGUI-like: single snapshots table as main view
+        draw_snapshots_only(frame, chunks[1], app);
     }
 
     // Status bar first
@@ -43,7 +38,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
     let filter_hint = if app.filter_text.trim().is_empty() { String::new() } else { format!(" · filter: {}", app.filter_text) };
     let snaps_label = if app.filter_text.trim().is_empty() { format!("snaps: {}", snaps_total) } else { format!("snaps: {}/{}", snaps_filtered, snaps_total) };
     let left = format!("cfg: {cfg}  {snaps_label}  {sudo}  focus: {focus}{filter_hint}");
-    let right = "q quit · r refresh · c create · e edit · d delete · Enter details · x diff · m mount · U umount · R rollback · K cleanup · C view-config · g edit-config (form) · Q setup-quota · Y limine-sync · f fullscreen · F filter · S sudo · ? help";
+    let right = "q quit · r refresh · c create · e edit · d delete · Enter details · x diff · m mount · U umount · R rollback · K cleanup · C view-config · g edit-config (form) · Q setup-quota · Y limine-sync · f fullscreen · F filter · Tab/Shift-Tab switch-config · [ ] switch-config · u userdata · S sudo · ? help";
     let status_line = Line::from(vec![
         Span::styled(left, Style::default()),
         Span::raw("  |  "),
@@ -51,7 +46,24 @@ pub fn draw(frame: &mut Frame, app: &App) {
     ]);
     let status = Paragraph::new(status_line)
         .block(Block::default().borders(Borders::TOP).title(app.status.as_str()));
-    frame.render_widget(status, chunks[1]);
+    frame.render_widget(status, chunks[2]);
+
+    // Optional bottom userdata bar (like SnapperGUI)
+    if app.show_userdata {
+        let mut info_lines: Vec<Line> = Vec::new();
+        if let Some(s_idx) = app.snaps_state.selected {
+            if let Some(s) = app.filtered_snaps.get(s_idx) {
+                info_lines.push(Line::from(vec![Span::raw("User: "), Span::styled(if s.user.is_empty() { "-" } else { s.user.as_str() }, THEME.highlight_style())]));
+                info_lines.push(Line::from(vec![Span::raw("Type: "), Span::raw(if s.kind.is_empty() { "-" } else { s.kind.as_str() })]));
+                info_lines.push(Line::from(vec![Span::raw("Cleanup: "), Span::raw(if s.cleanup.is_empty() { "-" } else { s.cleanup.as_str() })]));
+            }
+        } else {
+            info_lines.push(Line::from(Span::styled("Userdata", THEME.muted_style())));
+        }
+        let bar = Paragraph::new(info_lines).block(Block::default().borders(Borders::TOP).title("Userdata"));
+        let area = chunks.last().copied().unwrap_or_else(|| frame.size());
+        frame.render_widget(bar, area);
+    }
 
     // Then draw modals on top (no dim overlay)
     match &app.mode {
@@ -67,6 +79,66 @@ pub fn draw(frame: &mut Frame, app: &App) {
     }
 }
 
+fn draw_snapshots_only(frame: &mut Frame, area: Rect, app: &App) {
+    let mut block = THEME.block("Snapshots");
+    if app.focus == Focus::Snapshots { block = THEME.block_focused("Snapshots"); }
+
+    if app.filtered_snaps.is_empty() {
+        let empty = Paragraph::new("No snapshots").style(THEME.muted_style()).block(block);
+        frame.render_widget(empty, area);
+        return;
+    }
+
+    let rows: Vec<Row> = app.filtered_snaps.iter().map(|s| {
+        Row::new(vec![
+            Cell::from(format!("{}", s.id)),
+            Cell::from(s.date.clone()),
+            Cell::from(if s.user.is_empty() { "-".to_string() } else { s.user.clone() }),
+            Cell::from(s.kind.clone()),
+            Cell::from(s.cleanup.clone()),
+            Cell::from(s.description.clone()),
+        ])
+    }).collect();
+    // Compute inner area to decide if scrollbar is needed
+    let inner_area = block.inner(area);
+    let table = Table::new(rows, [Constraint::Length(6), Constraint::Length(26), Constraint::Length(8), Constraint::Length(10), Constraint::Length(14), Constraint::Min(10)])
+        .header(Row::new(vec![Cell::from("#"), Cell::from("Date"), Cell::from("User"), Cell::from("Type"), Cell::from("Cleanup"), Cell::from("Description")])
+            .style(THEME.header_style().bg(THEME.header_bg)))
+        .block(block)
+        .highlight_style(THEME.highlight_style())
+        .highlight_symbol("▶ ");
+    let mut tstate = TableState::default();
+    tstate.select(app.snaps_state.selected);
+    frame.render_stateful_widget(table, area, &mut tstate);
+
+    if let Some(sel) = app.snaps_state.selected {
+        let total = app.filtered_snaps.len();
+        // inner height available for rows = inner.height minus 1 for header
+        let visible_rows: usize = inner_area.height.saturating_sub(1) as usize;
+        if total > visible_rows {
+            let mut sb = ScrollbarState::new(total).position(sel);
+            let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight);
+            frame.render_stateful_widget(scrollbar, area, &mut sb);
+        }
+    }
+}
+
+fn draw_config_tabs(frame: &mut Frame, area: Rect, app: &App) {
+    let titles: Vec<Line> = if app.configs.is_empty() {
+        vec![Line::from("(no configs)")]
+    } else {
+        app.configs.iter().map(|c| Line::from(c.name.clone())).collect()
+    };
+    let idx = app.configs_state.selected.unwrap_or(0).min(app.configs.len().saturating_sub(1));
+    let tabs = Tabs::new(titles)
+        .select(idx)
+        .block(Block::default().borders(Borders::BOTTOM).title("Configs"))
+        .style(Style::default().fg(THEME.fg))
+        .highlight_style(THEME.highlight_style())
+        .divider(Span::styled(" │ ", THEME.muted_style()));
+    frame.render_widget(tabs, area);
+}
+
 fn draw_snapshots_fullscreen(frame: &mut Frame, area: Rect, app: &App) {
     let mut block = THEME.block("Snapshots (fullscreen)");
     if app.focus == Focus::Snapshots { block = THEME.block_focused("Snapshots (fullscreen)"); }
@@ -80,14 +152,17 @@ fn draw_snapshots_fullscreen(frame: &mut Frame, area: Rect, app: &App) {
     let rows: Vec<Row> = app.filtered_snaps.iter().map(|s| {
         Row::new(vec![
             Cell::from(format!("{}", s.id)),
+            Cell::from(s.date.clone()),
+            Cell::from(if s.user.is_empty() { "-".to_string() } else { s.user.clone() }),
             Cell::from(s.kind.clone()),
             Cell::from(s.cleanup.clone()),
-            Cell::from(s.date.clone()),
             Cell::from(s.description.clone()),
         ])
     }).collect();
-    let table = Table::new(rows, [Constraint::Length(6), Constraint::Length(10), Constraint::Length(14), Constraint::Length(28), Constraint::Min(10)])
-        .header(Row::new(vec![Cell::from("#"), Cell::from("Type"), Cell::from("Cleanup"), Cell::from("Date"), Cell::from("Description")])
+    // Compute inner area to decide if scrollbar is needed
+    let inner_area = block.inner(area);
+    let table = Table::new(rows, [Constraint::Length(6), Constraint::Length(26), Constraint::Length(8), Constraint::Length(10), Constraint::Length(14), Constraint::Min(10)])
+        .header(Row::new(vec![Cell::from("#"), Cell::from("Date"), Cell::from("User"), Cell::from("Type"), Cell::from("Cleanup"), Cell::from("Description")])
             .style(THEME.header_style().bg(THEME.header_bg)))
         .block(block)
         .highlight_style(THEME.highlight_style())
@@ -97,10 +172,13 @@ fn draw_snapshots_fullscreen(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_stateful_widget(table, area, &mut tstate);
 
     if let Some(sel) = app.snaps_state.selected {
-        let total = app.filtered_snaps.len().max(1);
-        let mut sb = ScrollbarState::new(total).position(sel);
-        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight);
-        frame.render_stateful_widget(scrollbar, area, &mut sb);
+        let total = app.filtered_snaps.len();
+        let visible_rows: usize = inner_area.height.saturating_sub(1) as usize;
+        if total > visible_rows {
+            let mut sb = ScrollbarState::new(total).position(sel);
+            let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight);
+            frame.render_stateful_widget(scrollbar, area, &mut sb);
+        }
     }
 }
 
@@ -145,14 +223,15 @@ fn draw_left(frame: &mut Frame, area: Rect, app: &App) {
         let rows: Vec<Row> = app.filtered_snaps.iter().map(|s| {
             Row::new(vec![
                 Cell::from(format!("{}", s.id)),
+                Cell::from(s.date.clone()),
+                Cell::from(if s.user.is_empty() { "-".to_string() } else { s.user.clone() }),
                 Cell::from(s.kind.clone()),
                 Cell::from(s.cleanup.clone()),
-                Cell::from(s.date.clone()),
                 Cell::from(s.description.clone()),
             ])
         }).collect();
-        let table = Table::new(rows, [Constraint::Length(6), Constraint::Length(10), Constraint::Length(14), Constraint::Length(28), Constraint::Min(10)])
-            .header(Row::new(vec![Cell::from("#"), Cell::from("Type"), Cell::from("Cleanup"), Cell::from("Date"), Cell::from("Description")])
+        let table = Table::new(rows, [Constraint::Length(6), Constraint::Length(26), Constraint::Length(8), Constraint::Length(10), Constraint::Length(14), Constraint::Min(10)])
+            .header(Row::new(vec![Cell::from("#"), Cell::from("Date"), Cell::from("User"), Cell::from("Type"), Cell::from("Cleanup"), Cell::from("Description")])
                 .style(THEME.header_style().bg(THEME.header_bg)))
             .block(block)
             .highlight_style(THEME.highlight_style())
@@ -188,6 +267,7 @@ fn draw_right(frame: &mut Frame, area: Rect, app: &App) {
                 Span::raw(&s.config),
                 Span::raw(")"),
             ]));
+            lines.push(Line::from(format!("User: {}", if s.user.is_empty() { "-" } else { s.user.as_str() })));
             lines.push(Line::from(format!("Type: {}", if s.kind.is_empty() { "-" } else { s.kind.as_str() })));
             lines.push(Line::from(format!("Cleanup: {}", if s.cleanup.is_empty() { "-" } else { s.cleanup.as_str() })));
             lines.push(Line::from(format!("Date: {}", s.date)));

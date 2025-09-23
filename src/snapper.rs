@@ -8,6 +8,7 @@ pub struct Snapshot {
     // 'type' is a reserved word in Rust; use 'kind' to represent snapper's Type column
     pub kind: String,
     pub cleanup: String,
+    pub user: String,
     pub date: String,
     pub description: String,
 }
@@ -94,8 +95,8 @@ impl Snapper {
             anyhow::bail!("Unknown config '{config}' (not found in /etc/snapper/configs)");
         }
         // Prefer a narrow, stable set of columns for robust parsing
-        // Columns: number | type | cleanup | date | description
-        let out = Self::run_snapper(&["-c", config, "list", "--columns", "number,type,cleanup,date,description"], use_sudo)
+        // Columns (to match SnapperGUI layout): number | date | user | description | cleanup | type
+        let out = Self::run_snapper(&["-c", config, "list", "--columns", "number,date,user,description,cleanup,type"], use_sudo)
             .with_context(|| format!("Failed to run snapper list for config {config}"))?;
         if !out.status.success() {
             // Fallback for older snapper without --columns support: try plain 'list'
@@ -130,13 +131,14 @@ impl Snapper {
                         let date = parts.get(3).unwrap_or(&"").to_string();
                         let cleanup = parts.get(5).copied().unwrap_or("").to_string();
                         let mut description = parts.get(6).copied().unwrap_or("").to_string();
+                        let user = String::new();
                         if description.is_empty() {
                             // fallback to type or cleanup hint if description missing
                             description = if !cleanup.is_empty() && cleanup != "-" { format!("[{}]", cleanup) }
                                           else if !kind.is_empty() && kind != "-" { format!("[{}]", kind) }
                                           else { String::from("(no description)") };
                         }
-                        snaps.push(Snapshot { id, config: config.to_string(), kind, cleanup, date, description });
+                        snaps.push(Snapshot { id, config: config.to_string(), kind, cleanup, user, date, description });
                     }
                 } else if parts.len() >= 4 {
                     if let Ok(id) = parts[0].parse::<u64>() {
@@ -145,7 +147,8 @@ impl Snapper {
                         let description = parts.last().copied().unwrap_or("").to_string();
                         let description = if description.is_empty() { String::from("(no description)") } else { description };
                         let cleanup = String::new();
-                        snaps.push(Snapshot { id, config: config.to_string(), kind, cleanup, date, description });
+                        let user = String::new();
+                        snaps.push(Snapshot { id, config: config.to_string(), kind, cleanup, user, date, description });
                     }
                 }
             }
@@ -161,18 +164,18 @@ impl Snapper {
             }
             // Normalize to ASCII '|' and split into at most five fields: number | type | cleanup | date | description
             let normalized = lt.replace('│', "|");
-            let mut it = normalized.splitn(5, '|').map(|s| s.trim());
+            let mut it = normalized.splitn(6, '|').map(|s| s.trim());
             let c1 = it.next();
-            let c2 = it.next();
-            let c3 = it.next();
-            let c4 = it.next();
-            let c5 = it.next();
+            let c2 = it.next(); // date
+            let c3 = it.next(); // user
+            let c4 = it.next(); // description
+            let c5 = it.next(); // cleanup
+            let c6 = it.next(); // type
             if let Some(id_str) = c1 {
                 if let Ok(id) = id_str.parse::<u64>() {
-                    if let (Some(type_col), Some(cleanup_col), Some(date)) = (c2, c3, c4) {
-                        let mut description = c5.unwrap_or("").to_string();
+                    if let (Some(date), Some(user), Some(desc), Some(cleanup_col), Some(type_col)) = (c2, c3, c4, c5, c6) {
+                        let mut description = desc.to_string();
                         if description.is_empty() {
-                            // Prefer cleanup algorithm name as description when empty; else type
                             let cleanup = cleanup_col.trim();
                             let t = type_col.trim();
                             description = if !cleanup.is_empty() && cleanup != "-" {
@@ -188,13 +191,14 @@ impl Snapper {
                             config: config.to_string(),
                             kind: type_col.to_string(),
                             cleanup: cleanup_col.to_string(),
+                            user: user.to_string(),
                             date: date.to_string(),
                             description,
                         });
                     } else if let (Some(date), Some(desc)) = (c2, c3) {
-                        // Fallback for three columns: number | date | description
+                        // Fallback for three columns: number | date | description (older formats)
                         let description = if desc.is_empty() { String::from("(no description)") } else { desc.to_string() };
-                        snaps.push(Snapshot { id, config: config.to_string(), kind: String::new(), cleanup: String::new(), date: date.to_string(), description });
+                        snaps.push(Snapshot { id, config: config.to_string(), kind: String::new(), cleanup: String::new(), user: String::new(), date: date.to_string(), description });
                     }
                 }
             }

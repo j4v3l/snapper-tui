@@ -15,7 +15,7 @@ pub enum Focus {
 }
 
 impl Default for Focus {
-    fn default() -> Self { Focus::Configs }
+    fn default() -> Self { Focus::Snapshots }
 }
 
 #[derive(Debug, Default, Clone)]
@@ -101,6 +101,8 @@ pub struct App {
     // Config form editor state
     pub cfg_fields: Vec<ConfigField>,
     pub cfg_field_idx: Option<usize>,
+    // Layout toggles resembling SnapperGUI bottom bar
+    pub show_userdata: bool,
 }
 #[derive(Debug, Clone)]
 pub struct ConfigField {
@@ -135,6 +137,7 @@ impl App {
         s.cfg_field_idx = None;
         s.filtered_snaps = Vec::new();
         s.filter_text = persisted.filter.unwrap_or_default();
+    s.show_userdata = false;
         s.refresh_all();
         // try to restore last selected config
         if let Some(last) = persisted.last_config {
@@ -150,7 +153,7 @@ impl App {
         match &mut self.mode {
             Mode::Normal => {
                 match key.code {
-                    KeyCode::Tab => self.toggle_focus(),
+                    KeyCode::Tab => { if key.modifiers.contains(KeyModifiers::SHIFT) { self.select_prev_config(); } else { self.select_next_config(); } },
                     KeyCode::Up => self.on_up(),
                     KeyCode::Down => self.on_down(),
                     KeyCode::PageUp => self.on_page_up(),
@@ -175,6 +178,11 @@ impl App {
                     KeyCode::Char('C') => { self.view_config(); },
                     KeyCode::Char('Q') => { self.setup_quota(); },
                     KeyCode::Char('Y') => { self.sync_limine_for_selected(); },
+                    KeyCode::Char('u') => { self.show_userdata = !self.show_userdata; },
+                    KeyCode::Char('[') => { self.select_prev_config(); },
+                    KeyCode::Char(']') => { self.select_next_config(); },
+                    KeyCode::Left => { self.select_prev_config(); },
+                    KeyCode::Right => { self.select_next_config(); },
                     KeyCode::Char('S') => { self.use_sudo = !self.use_sudo; self.status = format!("sudo: {}", if self.use_sudo { "on" } else { "off" }); self.persist_state(); self.snaps_cache.clear(); self.refresh_all(); },
                     _ => {}
                 }
@@ -357,50 +365,22 @@ impl App {
         self.mode = Mode::Loading;
     }
 
-    fn toggle_focus(&mut self) {
-        self.focus = match self.focus { Focus::Configs => Focus::Snapshots, Focus::Snapshots => Focus::Configs };
-    }
-
     fn on_up(&mut self) {
-        match self.focus {
-            Focus::Configs => {
-                let len = self.configs.len();
-                if len == 0 { return; }
-                let idx = self.configs_state.selected.unwrap_or(0);
-                let new = idx.saturating_sub(1);
-                self.configs_state.selected = Some(new);
-                self.load_snapshots_for_selected();
-                self.persist_state();
-            }
-            Focus::Snapshots => {
-                let len = self.filtered_snaps.len();
-                if len == 0 { return; }
-                let idx = self.snaps_state.selected.unwrap_or(0);
-                let new = idx.saturating_sub(1);
-                self.snaps_state.selected = Some(new);
-            }
-        }
+        // Up navigates snapshot selection
+        let len = self.filtered_snaps.len();
+        if len == 0 { return; }
+        let idx = self.snaps_state.selected.unwrap_or(0);
+        let new = idx.saturating_sub(1);
+        self.snaps_state.selected = Some(new);
     }
 
     fn on_down(&mut self) {
-        match self.focus {
-            Focus::Configs => {
-                let len = self.configs.len();
-                if len == 0 { return; }
-                let idx = self.configs_state.selected.unwrap_or(0);
-                let new = (idx + 1).min(len - 1);
-                self.configs_state.selected = Some(new);
-                self.load_snapshots_for_selected();
-                self.persist_state();
-            }
-            Focus::Snapshots => {
-                let len = self.filtered_snaps.len();
-                if len == 0 { return; }
-                let idx = self.snaps_state.selected.unwrap_or(0);
-                let new = (idx + 1).min(len - 1);
-                self.snaps_state.selected = Some(new);
-            }
-        }
+        // Down navigates snapshot selection
+        let len = self.filtered_snaps.len();
+        if len == 0 { return; }
+        let idx = self.snaps_state.selected.unwrap_or(0);
+        let new = (idx + 1).min(len - 1);
+        self.snaps_state.selected = Some(new);
     }
 
     fn on_page_up(&mut self) {
@@ -1158,10 +1138,30 @@ impl App {
                     || s.date.to_lowercase().contains(&q)
                     || s.kind.to_lowercase().contains(&q)
                     || s.cleanup.to_lowercase().contains(&q)
+                    || s.user.to_lowercase().contains(&q)
                     || s.id.to_string().contains(&q)
                 )
                 .cloned()
                 .collect();
         }
+    }
+
+    fn select_prev_config(&mut self) {
+        let len = self.configs.len();
+        if len == 0 { return; }
+        let idx = self.configs_state.selected.unwrap_or(0);
+        let new = idx.saturating_sub(1);
+        self.configs_state.selected = Some(new);
+        self.load_snapshots_for_selected();
+        self.persist_state();
+    }
+    fn select_next_config(&mut self) {
+        let len = self.configs.len();
+        if len == 0 { return; }
+        let idx = self.configs_state.selected.unwrap_or(0);
+        let new = (idx + 1).min(len - 1);
+        self.configs_state.selected = Some(new);
+        self.load_snapshots_for_selected();
+        self.persist_state();
     }
 }
