@@ -1,0 +1,17 @@
+name: Documentation
+description: Report missing or unclear docs, or propose improvements
+labels: [documentation]
+body:
+  - type: textarea
+    id: context
+    attributes:
+      label: What needs documenting?
+      description: Link the section(s) or file(s) and describe the gap.
+      placeholder: e.g., Add a note about enabling unified diffs in snapper.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Suggested changes
+      description: Outline the changes you’d like to see.

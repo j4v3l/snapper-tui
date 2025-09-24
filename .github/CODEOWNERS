@@ -1,0 +1,5 @@
+# Code owners for reviews and approvals
+# Each line is a file pattern followed by one or more owners.
+# Example:
+# /docs/ @j4v3l
+* @j4v3l

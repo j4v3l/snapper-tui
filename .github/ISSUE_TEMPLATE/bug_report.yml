@@ -1,0 +1,28 @@
+name: Bug report
+description: Report a problem
+labels: [bug]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What happened and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: List clear steps
+      placeholder: 1. ...
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `snapper-tui --version` (if available)
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Relevant logs output
+      render: shell

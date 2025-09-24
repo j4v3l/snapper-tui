@@ -1,14 +1,15 @@
 [package]
 name = "snapper-tui"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
-license = "MIT"
-repository = ""
-description = "A simple, clean ratatui-based TUI wrapper for snapper to perform CRUD on snapshots."
+license = "GPL-3.0-or-later"
+repository = "https://github.com/j4v3l/snapper-tui"
+description = "A professional ratatui-based TUI for snapper with CRUD, config tabs, conditional scrollbars, and a clean UX."
 
 [profile.release]
 codegen-units = 1
 lto = true
+panic = "abort"
 
 [dependencies]
 anyhow = "1"
