@@ -15,8 +15,9 @@ pub struct ListState {
     pub selected: Option<usize>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub enum Mode {
+    #[default]
     Normal,
     Input(InputKind),
     ConfirmDelete(u64),
@@ -26,12 +27,6 @@ pub enum Mode {
     Details,
     Loading,
     ConfigForm,
-}
-
-impl Default for Mode {
-    fn default() -> Self {
-        Mode::Normal
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -1052,11 +1047,7 @@ impl App {
                                     continue;
                                 }
                                 // Normalize various vertical bars
-                                let t = raw
-                                    .replace('│', "|")
-                                    .replace('┃', "|")
-                                    .replace('┆', "|")
-                                    .replace('¦', "|");
+                                let t = raw.replace(['│', '┃', '┆', '¦'], "|");
 
                                 let mut key: Option<String> = None;
                                 let mut val: Option<String> = None;
@@ -1585,12 +1576,10 @@ impl App {
         if pos == 0 {
             return 0;
         }
-        let mut count = 0usize;
-        for (i, _) in self.input.char_indices() {
+        for (count, (i, _)) in self.input.char_indices().enumerate() {
             if count == pos {
                 return i;
             }
-            count += 1;
         }
         self.input.len()
     }
@@ -1732,8 +1721,8 @@ impl App {
                       // The main layout has: tabs (3), main (flex), status (1), optional userdata (7)
                       // The Details modal overlays the whole frame and is 70% height per ui.rs.
                       // visible_h ≈ rows * 0.70 minus modal decorations (title/footer/borders ~ 4-5 rows)
-        let modal_h = (rows as u16 * 70) / 100; // 70%
-                                                // Subtract 4 lines for title (top), footer (bottom), and borders/padding
+        let modal_h = (rows * 70) / 100; // 70%
+                                         // Subtract 4 lines for title (top), footer (bottom), and borders/padding
         let mut content_h = modal_h.saturating_sub(4);
         // Ensure at least 3 lines to avoid zero-page
         if content_h < 3 {

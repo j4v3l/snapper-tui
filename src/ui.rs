@@ -153,7 +153,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                         .and_then(|i| app.configs.get(i))
                         .map(|c| c.name.clone())
                         .unwrap_or_default();
-                    let candidates = vec![
+                    let candidates = [
                         format!("/run/snapper/{}/{}/mount", cfg, s.id),
                         format!("/var/run/snapper/{}/{}/mount", cfg, s.id),
                         format!("/.snapshots/{}/snapshot", s.id),
@@ -365,10 +365,7 @@ fn centered_rect_fixed(r: Rect, width: u16, height: u16) -> Rect {
 
 fn draw_input_modal(frame: &mut Frame, app: &App, kind: &InputKind) {
     // Use a very compact modal for Filter (similar to a password box)
-    let area = match kind {
-        // All input/edit boxes use the same compact fixed size now
-        _ => centered_rect_fixed(frame.size(), 50, 5),
-    };
+    let area = centered_rect_fixed(frame.size(), 50, 5);
     frame.render_widget(Clear, area); // clear background
     let title = match kind {
         InputKind::Create => "Create snapshot description",
@@ -438,7 +435,7 @@ fn draw_details_modal(frame: &mut Frame, app: &mut App) {
     const FIXED_WRAP_COLS: u16 = 100;
     let mut content_area = inner;
     if content_area.width > 1 {
-        content_area.width = content_area.width - 1; // reserve rightmost col for scrollbar
+        content_area.width -= 1; // reserve rightmost col for scrollbar
     }
     let rendered_text = normalize_text_for_ui(app.details_text.as_str());
     let prewrapped = prewrap_text(rendered_text.as_str(), FIXED_WRAP_COLS);
@@ -476,7 +473,7 @@ fn draw_details_modal(frame: &mut Frame, app: &mut App) {
     let total_pages = if visible_h == 0 {
         1
     } else {
-        (total_lines + visible_h - 1) / visible_h
+        total_lines.div_ceil(visible_h)
     };
     let at_top = start == 0;
     let at_end = start >= max_scroll;

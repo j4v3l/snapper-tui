@@ -176,10 +176,7 @@ impl Snapper {
                 {
                     continue;
                 }
-                let parts: Vec<&str> = lt
-                    .split(|c| c == '|' || c == '│')
-                    .map(|s| s.trim())
-                    .collect();
+                let parts: Vec<&str> = lt.split(['|', '│']).map(|s| s.trim()).collect();
                 if parts.len() >= 7 {
                     if let Ok(id) = parts[0].parse::<u64>() {
                         let kind = parts.get(1).copied().unwrap_or("").to_string();
