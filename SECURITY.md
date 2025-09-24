@@ -6,7 +6,7 @@ We support the latest minor release.
 
 ## Reporting a Vulnerability
 
-Please email security@yourdomain.example with:
+Please email jj4v3l@gmail.com with:
 - A detailed description
 - Steps to reproduce
 - Impact assessment

@@ -1,0 +1,22 @@
+name: Question
+description: Ask a question about using snapper-tui
+labels: [question]
+body:
+  - type: textarea
+    id: question
+    attributes:
+      label: Your question
+      description: What do you want to know or clarify?
+      placeholder: e.g., How do I enable sudo-less operations?
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: snapper-tui version
+      placeholder: 0.1.x
+  - type: input
+    id: os
+    attributes:
+      label: OS and version
+      placeholder: e.g., Arch Linux (kernel 6.x)

@@ -1,0 +1,17 @@
+name: Chore
+description: Maintenance task (CI, dependencies, refactors)
+labels: [chore]
+body:
+  - type: textarea
+    id: task
+    attributes:
+      label: Task description
+      placeholder: e.g., Update ratatui to latest minor and fix deprecated APIs.
+      description: What should be done and why?
+    validations:
+      required: true
+  - type: textarea
+    id: impact
+    attributes:
+      label: Impact
+      description: Any risks or areas to watch? (build, CI, packaging)
