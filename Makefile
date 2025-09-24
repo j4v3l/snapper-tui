@@ -1,6 +1,6 @@
 # Simple Makefile for snapper-tui
 
-.PHONY: all help build run sudo-run release clean fmt clippy test
+.PHONY: all help build run sudo-run release clean fmt clippy test version-patch version-minor version-major prepare-pr
 
 all: build ## Build (alias)
 
@@ -36,3 +36,19 @@ clippy: ## Lint with clippy (deny warnings)
 
 test: ## Run tests (all crates)
 	cargo test --all
+
+version-patch: ## Bump patch version, tag (scripts/release.sh patch)
+	bash scripts/release.sh patch
+
+version-minor: ## Bump minor version, tag (scripts/release.sh minor)
+	bash scripts/release.sh minor
+
+version-major: ## Bump major version, tag (scripts/release.sh major)
+	bash scripts/release.sh major
+
+prepare-pr: ## Prepare PR from dev -> main (push dev & tags, open PR on GitHub)
+	@git rev-parse --abbrev-ref HEAD | grep -qx 'dev' || { echo 'Switch to dev branch first'; exit 1; }
+	@git push origin dev --tags
+	@echo
+	@echo 'Open a PR from dev -> main:'
+	@echo '  https://github.com/j4v3l/snapper-tui/compare/main...dev?expand=1'
