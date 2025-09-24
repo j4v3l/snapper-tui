@@ -7,16 +7,8 @@ use anyhow::Result;
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::{Duration, Instant};
+use std::path::Path;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Focus {
-    Configs,
-    Snapshots,
-}
-
-impl Default for Focus {
-    fn default() -> Self { Focus::Snapshots }
-}
 
 #[derive(Debug, Default, Clone)]
 pub struct ListState {
@@ -67,7 +59,6 @@ pub enum PendingOp {
 #[derive(Default)]
 pub struct App {
     pub status: String,
-    pub focus: Focus,
     pub configs: Vec<Config>,
     // raw snapshots fetched from snapper (unfiltered)
     pub snapshots: Vec<Snapshot>,
@@ -83,8 +74,7 @@ pub struct App {
     pub details_text: String,
     pub details_scroll: u16,
     pub details_lines: u16,
-    // View options
-    pub snaps_fullscreen: bool,
+    // View options (fullscreen removed)
     pub filter_text: String,
     // Animation / background work
     pub tick: u64,
@@ -103,6 +93,19 @@ pub struct App {
     pub cfg_field_idx: Option<usize>,
     // Layout toggles resembling SnapperGUI bottom bar
     pub show_userdata: bool,
+    // Derived metadata for selected snapshot (for bottom Userdata panel)
+    pub selected_mount_point: Option<String>,
+    pub selected_diff_range: Option<(u64, u64)>,
+    pub userdata_summary: Option<String>,
+    pub userdata_rx: Option<Receiver<Result<String>>>,
+    // Debounce/background control for userdata summary
+    pub userdata_summary_seq: u64,
+    pub userdata_fetch_scheduled_at: Option<Instant>,
+    pub userdata_planned_cfg: Option<String>,
+    pub userdata_planned_from_to: Option<(u64, u64)>,
+    pub userdata_inflight_seq: Option<u64>,
+    // Help modal scroll state
+    pub help_scroll: u16,
 }
 #[derive(Debug, Clone)]
 pub struct ConfigField {
@@ -120,8 +123,7 @@ impl App {
         s.use_sudo = persisted.use_sudo;
         s.input_cursor = 0;
         s.details_scroll = 0;
-        s.details_lines = 0;
-        s.snaps_fullscreen = persisted.snaps_fullscreen;
+    s.details_lines = 0;
         s.tick = 0;
         s.status_rx = None;
     s.snaps_rx = None;
@@ -137,7 +139,17 @@ impl App {
         s.cfg_field_idx = None;
         s.filtered_snaps = Vec::new();
         s.filter_text = persisted.filter.unwrap_or_default();
-    s.show_userdata = false;
+    s.show_userdata = persisted.show_userdata;
+    s.selected_mount_point = None;
+    s.selected_diff_range = None;
+    s.userdata_summary = None;
+    s.userdata_rx = None;
+    s.userdata_summary_seq = 0;
+    s.userdata_fetch_scheduled_at = None;
+    s.userdata_planned_cfg = None;
+    s.userdata_planned_from_to = None;
+    s.userdata_inflight_seq = None;
+    s.help_scroll = 0;
         s.refresh_all();
         // try to restore last selected config
         if let Some(last) = persisted.last_config {
@@ -165,11 +177,11 @@ impl App {
                     KeyCode::Char('e') => self.start_edit(),
                     KeyCode::Char('d') => self.start_delete_confirm(),
                     KeyCode::Char('g') => { self.start_config_edit(); },
-                    KeyCode::Char('?') => { self.mode = Mode::Help; },
+                    KeyCode::Char('?') => { self.help_scroll = 0; self.mode = Mode::Help; },
                     KeyCode::Enter => { self.on_enter(); },
                     KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => { self.start_filter_input(); },
                     KeyCode::Char('F') => { self.start_filter_input(); },
-                    KeyCode::Char('f') => { self.snaps_fullscreen = !self.snaps_fullscreen; self.persist_state(); },
+                    // Fullscreen removed
                     KeyCode::Char('x') => { self.on_diff(); },
                     KeyCode::Char('m') => { self.on_mount(); },
                     KeyCode::Char('U') => { self.on_umount(); },
@@ -178,7 +190,7 @@ impl App {
                     KeyCode::Char('C') => { self.view_config(); },
                     KeyCode::Char('Q') => { self.setup_quota(); },
                     KeyCode::Char('Y') => { self.sync_limine_for_selected(); },
-                    KeyCode::Char('u') => { self.show_userdata = !self.show_userdata; },
+                    KeyCode::Char('u') => { self.show_userdata = !self.show_userdata; self.persist_state(); },
                     KeyCode::Char('[') => { self.select_prev_config(); },
                     KeyCode::Char(']') => { self.select_next_config(); },
                     KeyCode::Left => { self.select_prev_config(); },
@@ -256,7 +268,16 @@ impl App {
                 }
             }
             Mode::Help => {
-                if matches!(key.code, KeyCode::Esc | KeyCode::Char('q')) { self.mode = Mode::Normal; }
+                match key.code {
+                    KeyCode::Esc | KeyCode::Char('q') => { self.mode = Mode::Normal; }
+                    KeyCode::Up => { self.help_scroll = self.help_scroll.saturating_sub(1); }
+                    KeyCode::Down => { self.help_scroll = self.help_scroll.saturating_add(1); }
+                    KeyCode::PageUp => { self.help_scroll = self.help_scroll.saturating_sub(10); }
+                    KeyCode::PageDown => { self.help_scroll = self.help_scroll.saturating_add(10); }
+                    KeyCode::Home => { self.help_scroll = 0; }
+                    KeyCode::End => { self.help_scroll = self.help_scroll.saturating_add(1000); }
+                    _ => {}
+                }
             }
             Mode::Details => {
                 match key.code {
@@ -325,12 +346,7 @@ impl App {
         self.status.clear();
     }
     fn persist_state(&self) {
-        let st = PersistedState {
-            use_sudo: self.use_sudo,
-            snaps_fullscreen: self.snaps_fullscreen,
-            last_config: self.selected_config_name().map(|s| s.to_string()),
-            filter: if self.filter_text.trim().is_empty() { None } else { Some(self.filter_text.clone()) },
-        };
+        let st = PersistedState { use_sudo: self.use_sudo, last_config: self.selected_config_name().map(|s| s.to_string()), filter: if self.filter_text.trim().is_empty() { None } else { Some(self.filter_text.clone()) }, show_userdata: self.show_userdata };
         st.save();
     }
 
@@ -372,6 +388,7 @@ impl App {
         let idx = self.snaps_state.selected.unwrap_or(0);
         let new = idx.saturating_sub(1);
         self.snaps_state.selected = Some(new);
+        self.update_selected_snapshot_meta();
     }
 
     fn on_down(&mut self) {
@@ -381,78 +398,38 @@ impl App {
         let idx = self.snaps_state.selected.unwrap_or(0);
         let new = (idx + 1).min(len - 1);
         self.snaps_state.selected = Some(new);
+        self.update_selected_snapshot_meta();
     }
 
     fn on_page_up(&mut self) {
-        match self.focus {
-            Focus::Configs => {
-                let len = self.configs.len();
-                if len == 0 { return; }
-                let idx = self.configs_state.selected.unwrap_or(0);
-                let new = idx.saturating_sub(10);
-                self.configs_state.selected = Some(new);
-                self.load_snapshots_for_selected();
-                self.persist_state();
-            }
-            Focus::Snapshots => {
-                let len = self.filtered_snaps.len();
-                if len == 0 { return; }
-                let idx = self.snaps_state.selected.unwrap_or(0);
-                let new = idx.saturating_sub(10);
-                self.snaps_state.selected = Some(new);
-            }
-        }
+        let len = self.filtered_snaps.len();
+        if len == 0 { return; }
+        let idx = self.snaps_state.selected.unwrap_or(0);
+        let new = idx.saturating_sub(10);
+        self.snaps_state.selected = Some(new);
+        self.update_selected_snapshot_meta();
     }
 
     fn on_page_down(&mut self) {
-        match self.focus {
-            Focus::Configs => {
-                let len = self.configs.len();
-                if len == 0 { return; }
-                let idx = self.configs_state.selected.unwrap_or(0);
-                let new = (idx + 10).min(len.saturating_sub(1));
-                self.configs_state.selected = Some(new);
-                self.load_snapshots_for_selected();
-                self.persist_state();
-            }
-            Focus::Snapshots => {
-                let len = self.filtered_snaps.len();
-                if len == 0 { return; }
-                let idx = self.snaps_state.selected.unwrap_or(0);
-                let new = (idx + 10).min(len.saturating_sub(1));
-                self.snaps_state.selected = Some(new);
-            }
-        }
+        let len = self.filtered_snaps.len();
+        if len == 0 { return; }
+        let idx = self.snaps_state.selected.unwrap_or(0);
+        let new = (idx + 10).min(len.saturating_sub(1));
+        self.snaps_state.selected = Some(new);
+        self.update_selected_snapshot_meta();
     }
 
     fn on_home(&mut self) {
-        match self.focus {
-            Focus::Configs => {
-                if self.configs.is_empty() { return; }
-                self.configs_state.selected = Some(0);
-                self.load_snapshots_for_selected();
-            }
-            Focus::Snapshots => {
-                if self.filtered_snaps.is_empty() { return; }
-                self.snaps_state.selected = Some(0);
-            }
-        }
+        if self.filtered_snaps.is_empty() { return; }
+        self.snaps_state.selected = Some(0);
+        self.update_selected_snapshot_meta();
     }
 
     fn on_end(&mut self) {
-        match self.focus {
-            Focus::Configs => {
-                let len = self.configs.len();
-                if len == 0 { return; }
-                self.configs_state.selected = Some(len - 1);
-                self.load_snapshots_for_selected();
-            }
-            Focus::Snapshots => {
-                let len = self.filtered_snaps.len();
-                if len == 0 { return; }
-                self.snaps_state.selected = Some(len - 1);
-            }
-        }
+        let len = self.filtered_snaps.len();
+        if len == 0 { return; }
+        self.snaps_state.selected = Some(len - 1);
+        self.update_selected_snapshot_meta();
     }
 
     pub fn refresh_all(&mut self) {
@@ -497,6 +474,7 @@ impl App {
             self.snapshots = cached;
             self.apply_filter();
             self.snaps_state.selected = if self.filtered_snaps.is_empty() { None } else { Some(0) };
+            self.update_selected_snapshot_meta();
             // If cache is fresh, avoid immediate refresh to reduce churn
             if seen_at.elapsed() < self.snaps_cache_ttl {
                 self.status = format!("Cached snapshots for {} ({}s old)", cfg_name, seen_at.elapsed().as_secs());
@@ -506,6 +484,9 @@ impl App {
             self.snapshots.clear();
             self.filtered_snaps.clear();
             self.snaps_state.selected = None;
+            self.selected_mount_point = None;
+            self.selected_diff_range = None;
+            self.userdata_summary = None;
         }
         // start background refresh; drop previous receiver if any
         self.snaps_rx = None;
@@ -521,6 +502,40 @@ impl App {
         self.snaps_loading_for = Some(cfg_name.clone());
     let status_prefix = if self.snaps_cache.contains_key(&cfg_name) { "Refreshing" } else { "Loading" };
         self.status = format!("{} snapshots for {}…", status_prefix, cfg_name);
+    }
+
+    fn update_selected_snapshot_meta(&mut self) {
+        // precompute simple diff range and mountpoint candidates; schedule a debounced summary fetch
+        if let Some(sel) = self.snaps_state.selected {
+            if let Some(curr) = self.filtered_snaps.get(sel) {
+                let from = if sel > 0 { self.filtered_snaps.get(sel - 1).map(|p| p.id).unwrap_or(0) } else { 0 };
+                self.selected_diff_range = Some((from, curr.id));
+                let cfg_owned_name = self.selected_config_name().unwrap_or("").to_string();
+                let c = cfg_owned_name.clone();
+                let id = curr.id;
+                let candidates = [
+                    format!("/run/snapper/{c}/{id}/mount"),
+                    format!("/var/run/snapper/{c}/{id}/mount"),
+                    format!("/.snapshots/{id}/snapshot"),
+                ];
+                self.selected_mount_point = candidates.iter().find(|p| Path::new(p.as_str()).exists()).cloned();
+                // Debounce plan: schedule a fetch ~200ms later; overwrite plan on further selection changes
+                self.userdata_summary_seq = self.userdata_summary_seq.wrapping_add(1);
+                self.userdata_planned_cfg = Some(c.clone());
+                self.userdata_planned_from_to = Some((from, id));
+                self.userdata_fetch_scheduled_at = Some(Instant::now());
+                self.userdata_summary = None;
+                // Do not spawn here; on_tick will check delay and spawn
+                return;
+            }
+        }
+        self.selected_diff_range = None;
+        self.selected_mount_point = None;
+        self.userdata_summary = None;
+        self.userdata_rx = None;
+        self.userdata_planned_cfg = None;
+        self.userdata_planned_from_to = None;
+        self.userdata_fetch_scheduled_at = None;
     }
 
     fn selected_config_name(&self) -> Option<&str> {
@@ -786,6 +801,54 @@ impl App {
                 }
             }
         }
+        // Debounced spawn for lightweight userdata summary (after ~200ms of stability)
+        if let (Some(sched_at), Some(cfg), Some((from, to))) = (self.userdata_fetch_scheduled_at, self.userdata_planned_cfg.clone(), self.userdata_planned_from_to) {
+            // Only if nothing is inflight and delay passed
+            if self.userdata_rx.is_none() && sched_at.elapsed() >= Duration::from_millis(200) {
+                let (tx, rx) = mpsc::channel::<Result<(u64, String)>>();
+                let use_sudo = self.use_sudo;
+                let seq = self.userdata_summary_seq;
+                thread::spawn(move || {
+                    let res = Snapper::snapshot_status(&cfg, from, to, use_sudo).map(|s| {
+                        let mut lines = s.lines();
+                        let mut out = String::new();
+                        for _ in 0..6 { if let Some(l) = lines.next() { out.push_str(l); out.push('\n'); } else { break; } }
+                        (seq, out)
+                    });
+                    let _ = tx.send(res);
+                });
+                // store a mapping receiver by adapting types via an adapter thread (keep consistent with field type)
+                let (bridge_tx, bridge_rx) = mpsc::channel::<Result<String>>();
+                thread::spawn(move || {
+                    match rx.recv() {
+                        Ok(Ok((_seq, text))) => { let _ = bridge_tx.send(Ok(text)); }
+                        Ok(Err(e)) => { let _ = bridge_tx.send(Err(e)); }
+                        Err(_) => { /* drop */ }
+                    }
+                });
+                self.userdata_inflight_seq = Some(seq);
+                self.userdata_rx = Some(bridge_rx);
+                self.userdata_fetch_scheduled_at = None; // consumed
+            }
+        }
+        // poll lightweight userdata summary results
+        if let Some(rx) = &self.userdata_rx {
+            match rx.try_recv() {
+                Ok(Ok(text)) => {
+                    // accept text only if this corresponds to the current selection context; sequence already advanced
+                    self.userdata_summary = Some(text);
+                    self.userdata_rx = None;
+                }
+                Ok(Err(e)) => {
+                    self.userdata_summary = Some(format!("Summary error: {e}"));
+                    self.userdata_rx = None;
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.userdata_rx = None;
+                }
+            }
+        }
         // check background snapshots load
         if let Some(rx) = &self.snaps_rx {
             match rx.try_recv() {
@@ -798,6 +861,7 @@ impl App {
                             self.snapshots = snaps;
                             self.apply_filter();
                             self.snaps_state.selected = if self.filtered_snaps.is_empty() { None } else { Some(0) };
+                            self.update_selected_snapshot_meta();
                             self.status.clear();
                         }
                     }
@@ -1097,11 +1161,7 @@ impl App {
                 match self.mode {
                     Mode::Details => { self.details_scroll = self.details_scroll.saturating_sub(3); }
                     _ => {
-                        if self.focus == Focus::Snapshots {
-                            if let Some(sel) = self.snaps_state.selected { self.snaps_state.selected = Some(sel.saturating_sub(1)); }
-                        } else {
-                            if let Some(sel) = self.configs_state.selected { self.configs_state.selected = Some(sel.saturating_sub(1)); self.load_snapshots_for_selected(); self.persist_state(); }
-                        }
+                        if let Some(sel) = self.snaps_state.selected { self.snaps_state.selected = Some(sel.saturating_sub(1)); self.update_selected_snapshot_meta(); }
                     }
                 }
             }
@@ -1109,13 +1169,8 @@ impl App {
                 match self.mode {
                     Mode::Details => { self.details_scroll = self.details_scroll.saturating_add(3); }
                     _ => {
-                        if self.focus == Focus::Snapshots {
-                            let len = self.filtered_snaps.len();
-                            if len > 0 { let sel = self.snaps_state.selected.unwrap_or(0); self.snaps_state.selected = Some((sel + 1).min(len - 1)); }
-                        } else {
-                            let len = self.configs.len();
-                            if len > 0 { let sel = self.configs_state.selected.unwrap_or(0); self.configs_state.selected = Some((sel + 1).min(len - 1)); self.load_snapshots_for_selected(); self.persist_state(); }
-                        }
+                        let len = self.filtered_snaps.len();
+                        if len > 0 { let sel = self.snaps_state.selected.unwrap_or(0); self.snaps_state.selected = Some((sel + 1).min(len - 1)); self.update_selected_snapshot_meta(); }
                     }
                 }
             }

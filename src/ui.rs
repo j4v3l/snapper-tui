@@ -1,19 +1,19 @@
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap, Clear, Table, Row, Cell, TableState, Scrollbar, ScrollbarState, ScrollbarOrientation, Tabs},
+    widgets::{Block, Borders, Paragraph, Wrap, Clear, Table, Row, Cell, TableState, Scrollbar, ScrollbarState, ScrollbarOrientation, Tabs},
     Frame,
 };
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::{App, Focus, Mode, InputKind};
+use crate::app::{App, Mode, InputKind};
 use crate::theme::THEME;
 
 pub fn draw(frame: &mut Frame, app: &App) {
     // Layout: [tabs][main][status][userdata?]
     let mut constraints: Vec<Constraint> = vec![Constraint::Length(3), Constraint::Min(1), Constraint::Length(1)];
-    if app.show_userdata { constraints.push(Constraint::Length(3)); }
+    if app.show_userdata { constraints.push(Constraint::Length(7)); }
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints(constraints)
@@ -22,23 +22,18 @@ pub fn draw(frame: &mut Frame, app: &App) {
     // Top tabs for configs
     draw_config_tabs(frame, chunks[0], app);
 
-    if app.snaps_fullscreen {
-        draw_snapshots_fullscreen(frame, chunks[1], app);
-    } else {
-        // SnapperGUI-like: single snapshots table as main view
-        draw_snapshots_only(frame, chunks[1], app);
-    }
+    // Always show the single snapshots table as main view
+    draw_snapshots_only(frame, chunks[1], app);
 
     // Status bar first
     let cfg = app.configs_state.selected.and_then(|i| app.configs.get(i)).map(|c| c.name.as_str()).unwrap_or("-");
     let snaps_total = app.snapshots.len();
     let snaps_filtered = app.filtered_snaps.len();
     let sudo = if app.use_sudo { "sudo:on" } else { "sudo:off" };
-    let focus = match app.focus { Focus::Configs => "Configs", Focus::Snapshots => "Snapshots" };
     let filter_hint = if app.filter_text.trim().is_empty() { String::new() } else { format!(" · filter: {}", app.filter_text) };
     let snaps_label = if app.filter_text.trim().is_empty() { format!("snaps: {}", snaps_total) } else { format!("snaps: {}/{}", snaps_filtered, snaps_total) };
-    let left = format!("cfg: {cfg}  {snaps_label}  {sudo}  focus: {focus}{filter_hint}");
-    let right = "q quit · r refresh · c create · e edit · d delete · Enter details · x diff · m mount · U umount · R rollback · K cleanup · C view-config · g edit-config (form) · Q setup-quota · Y limine-sync · f fullscreen · F filter · Tab/Shift-Tab switch-config · [ ] switch-config · u userdata · S sudo · ? help";
+    let left = format!("cfg: {cfg}  {snaps_label}  {sudo}{filter_hint}");
+    let right = "q quit · r refresh · c create · e edit · d delete · Enter details · x diff · m mount · U umount · R rollback · K cleanup · C view-config · g edit-config (form) · Q setup-quota · Y limine-sync · F filter · Tab/Shift-Tab switch-config · [ ] switch-config · u userdata · S sudo · ? help";
     let status_line = Line::from(vec![
         Span::styled(left, Style::default()),
         Span::raw("  |  "),
@@ -50,18 +45,56 @@ pub fn draw(frame: &mut Frame, app: &App) {
 
     // Optional bottom userdata bar (like SnapperGUI)
     if app.show_userdata {
-        let mut info_lines: Vec<Line> = Vec::new();
+        let area = chunks.last().copied().unwrap_or_else(|| frame.size());
+        let mut lines: Vec<Line> = Vec::new();
         if let Some(s_idx) = app.snaps_state.selected {
             if let Some(s) = app.filtered_snaps.get(s_idx) {
-                info_lines.push(Line::from(vec![Span::raw("User: "), Span::styled(if s.user.is_empty() { "-" } else { s.user.as_str() }, THEME.highlight_style())]));
-                info_lines.push(Line::from(vec![Span::raw("Type: "), Span::raw(if s.kind.is_empty() { "-" } else { s.kind.as_str() })]));
-                info_lines.push(Line::from(vec![Span::raw("Cleanup: "), Span::raw(if s.cleanup.is_empty() { "-" } else { s.cleanup.as_str() })]));
+                let cfg_name = if s.config.is_empty() {
+                    app.configs_state.selected.and_then(|i| app.configs.get(i)).map(|c| c.name.as_str()).unwrap_or("-")
+                } else { s.config.as_str() };
+                lines.push(Line::from(vec![Span::styled("ID: ", Style::default().add_modifier(Modifier::BOLD)), Span::raw(format!("{}", s.id))]));
+                lines.push(Line::from(vec![Span::styled("Config: ", Style::default().add_modifier(Modifier::BOLD)), Span::raw(cfg_name)]));
+                lines.push(Line::from(vec![Span::styled("Date: ", Style::default().add_modifier(Modifier::BOLD)), Span::raw(s.date.clone())]));
+                lines.push(Line::from(vec![Span::styled("User: ", Style::default().add_modifier(Modifier::BOLD)), Span::raw(if s.user.is_empty() { "-" } else { s.user.as_str() })]));
+                lines.push(Line::from(vec![Span::styled("Type: ", Style::default().add_modifier(Modifier::BOLD)), Span::raw(if s.kind.is_empty() { "-" } else { s.kind.as_str() })]));
+                lines.push(Line::from(vec![Span::styled("Cleanup: ", Style::default().add_modifier(Modifier::BOLD)), Span::raw(if s.cleanup.is_empty() { "-" } else { s.cleanup.as_str() })]));
+                lines.push(Line::from(vec![Span::styled("Description: ", Style::default().add_modifier(Modifier::BOLD)), Span::raw(s.description.clone())]));
+                // Simple hints: mountpoint (best effort) and diff/status ranges
+                if let Some(sel) = app.snaps_state.selected {
+                    let from = if sel > 0 { app.filtered_snaps.get(sel - 1).map(|p| p.id).unwrap_or(0) } else { 0 };
+                    let to = s.id;
+                    lines.push(Line::from(vec![Span::styled("Compare range: ", Style::default().add_modifier(Modifier::BOLD)), Span::raw(format!("{}..{} (Enter to view status, x for diff)", from, to))]));
+                }
+                // Mountpoint heuristic mirrors common snapper locations; UI-only best effort
+                {
+                    let cfg = app.configs_state.selected.and_then(|i| app.configs.get(i)).map(|c| c.name.clone()).unwrap_or_default();
+                    let candidates = vec![
+                        format!("/run/snapper/{}/{}/mount", cfg, s.id),
+                        format!("/var/run/snapper/{}/{}/mount", cfg, s.id),
+                        format!("/.snapshots/{}/snapshot", s.id),
+                    ];
+                    // Prefer detected mountpoint from computed metadata
+                    if let Some(mp) = &app.selected_mount_point {
+                        lines.push(Line::from(vec![Span::styled("Mountpoint: ", Style::default().add_modifier(Modifier::BOLD)), Span::raw(mp.clone())]));
+                    } else {
+                        // We don't probe the filesystem here to avoid IO in the draw loop; just display candidates
+                        lines.push(Line::from(vec![Span::styled("Mountpoints: ", Style::default().add_modifier(Modifier::BOLD)), Span::raw(candidates.join("  "))]));
+                    }
+                }
+                // Lightweight background summary (first lines of status) if available
+                if let Some(summary) = &app.userdata_summary {
+                    lines.push(Line::from(Span::styled("Summary:", Style::default().add_modifier(Modifier::BOLD))));
+                    for l in summary.lines() { lines.push(Line::from(l.to_string())); }
+                }
+            } else {
+                lines.push(Line::from(Span::styled("No snapshot selected", THEME.muted_style())));
             }
         } else {
-            info_lines.push(Line::from(Span::styled("Userdata", THEME.muted_style())));
+            lines.push(Line::from(Span::styled("No snapshot selected", THEME.muted_style())));
         }
-        let bar = Paragraph::new(info_lines).block(Block::default().borders(Borders::TOP).title("Userdata"));
-        let area = chunks.last().copied().unwrap_or_else(|| frame.size());
+        let bar = Paragraph::new(lines)
+            .wrap(Wrap { trim: true })
+            .block(THEME.block("Userdata"));
         frame.render_widget(bar, area);
     }
 
@@ -72,7 +105,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Mode::ConfirmDelete(id) => draw_confirm_modal(frame, *id),
         Mode::ConfirmRollback(id) => draw_confirm_rollback(frame, *id),
         Mode::ConfirmCleanup(alg) => draw_confirm_cleanup(frame, alg),
-        Mode::Help => draw_help_modal(frame),
+    Mode::Help => draw_help_modal(frame, app),
         Mode::Details => draw_details_modal(frame, app),
         Mode::Loading => draw_loading_modal(frame, app),
         Mode::ConfigForm => draw_config_form(frame, app),
@@ -80,8 +113,13 @@ pub fn draw(frame: &mut Frame, app: &App) {
 }
 
 fn draw_snapshots_only(frame: &mut Frame, area: Rect, app: &App) {
-    let mut block = THEME.block("Snapshots");
-    if app.focus == Focus::Snapshots { block = THEME.block_focused("Snapshots"); }
+    // Minimal size guard: if area too small, show a hint
+    if area.width < 50 || area.height < 5 {
+        let hint = Paragraph::new("Terminal too small. Recommended ≥ 80x24").style(THEME.warn_style()).block(THEME.block("Resize terminal"));
+        frame.render_widget(hint, area);
+        return;
+    }
+    let block = THEME.block("Snapshots");
 
     if app.filtered_snaps.is_empty() {
         let empty = Paragraph::new("No snapshots").style(THEME.muted_style()).block(block);
@@ -139,149 +177,9 @@ fn draw_config_tabs(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(tabs, area);
 }
 
-fn draw_snapshots_fullscreen(frame: &mut Frame, area: Rect, app: &App) {
-    let mut block = THEME.block("Snapshots (fullscreen)");
-    if app.focus == Focus::Snapshots { block = THEME.block_focused("Snapshots (fullscreen)"); }
+// draw_snapshots_fullscreen removed
 
-    if app.filtered_snaps.is_empty() {
-        let empty = Paragraph::new("No snapshots").style(THEME.muted_style()).block(block);
-        frame.render_widget(empty, area);
-        return;
-    }
-
-    let rows: Vec<Row> = app.filtered_snaps.iter().map(|s| {
-        Row::new(vec![
-            Cell::from(format!("{}", s.id)),
-            Cell::from(s.date.clone()),
-            Cell::from(if s.user.is_empty() { "-".to_string() } else { s.user.clone() }),
-            Cell::from(s.kind.clone()),
-            Cell::from(s.cleanup.clone()),
-            Cell::from(s.description.clone()),
-        ])
-    }).collect();
-    // Compute inner area to decide if scrollbar is needed
-    let inner_area = block.inner(area);
-    let table = Table::new(rows, [Constraint::Length(6), Constraint::Length(26), Constraint::Length(8), Constraint::Length(10), Constraint::Length(14), Constraint::Min(10)])
-        .header(Row::new(vec![Cell::from("#"), Cell::from("Date"), Cell::from("User"), Cell::from("Type"), Cell::from("Cleanup"), Cell::from("Description")])
-            .style(THEME.header_style().bg(THEME.header_bg)))
-        .block(block)
-        .highlight_style(THEME.highlight_style())
-        .highlight_symbol("▶ ");
-    let mut tstate = TableState::default();
-    tstate.select(app.snaps_state.selected);
-    frame.render_stateful_widget(table, area, &mut tstate);
-
-    if let Some(sel) = app.snaps_state.selected {
-        let total = app.filtered_snaps.len();
-        let visible_rows: usize = inner_area.height.saturating_sub(1) as usize;
-        if total > visible_rows {
-            let mut sb = ScrollbarState::new(total).position(sel);
-            let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight);
-            frame.render_stateful_widget(scrollbar, area, &mut sb);
-        }
-    }
-}
-
-fn draw_left(frame: &mut Frame, area: Rect, app: &App) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage(45),
-            Constraint::Percentage(55),
-        ])
-        .split(area);
-
-    // Configs list
-    let configs_items: Vec<ListItem> = if app.configs.is_empty() {
-        vec![ListItem::new("No configs").style(THEME.muted_style())]
-    } else {
-        app.configs
-            .iter()
-            .map(|c| ListItem::new(c.name.clone()))
-            .collect()
-    };
-    let mut list_state = ratatui::widgets::ListState::default();
-    list_state.select(app.configs_state.selected);
-    let mut block = THEME.block("Configs");
-    if app.focus == Focus::Configs { block = THEME.block_focused("Configs"); }
-    let configs_list = List::new(configs_items)
-        .block(block)
-        .highlight_style(THEME.highlight_style())
-        .highlight_symbol("▶ ");
-    frame.render_stateful_widget(configs_list, chunks[0], &mut list_state);
-
-    // Snapshots table
-    let mut block = THEME.block("Snapshots");
-    if app.focus == Focus::Snapshots { block = THEME.block_focused("Snapshots"); }
-
-    if app.filtered_snaps.is_empty() {
-        let empty = Paragraph::new("No snapshots")
-            .style(THEME.muted_style())
-            .block(block.clone());
-        frame.render_widget(empty, chunks[1]);
-    } else {
-        let rows: Vec<Row> = app.filtered_snaps.iter().map(|s| {
-            Row::new(vec![
-                Cell::from(format!("{}", s.id)),
-                Cell::from(s.date.clone()),
-                Cell::from(if s.user.is_empty() { "-".to_string() } else { s.user.clone() }),
-                Cell::from(s.kind.clone()),
-                Cell::from(s.cleanup.clone()),
-                Cell::from(s.description.clone()),
-            ])
-        }).collect();
-        let table = Table::new(rows, [Constraint::Length(6), Constraint::Length(26), Constraint::Length(8), Constraint::Length(10), Constraint::Length(14), Constraint::Min(10)])
-            .header(Row::new(vec![Cell::from("#"), Cell::from("Date"), Cell::from("User"), Cell::from("Type"), Cell::from("Cleanup"), Cell::from("Description")])
-                .style(THEME.header_style().bg(THEME.header_bg)))
-            .block(block)
-            .highlight_style(THEME.highlight_style())
-            .highlight_symbol("▶ ");
-        let mut tstate = TableState::default();
-        tstate.select(app.snaps_state.selected);
-        frame.render_stateful_widget(table, chunks[1], &mut tstate);
-
-        // Optional: scrollbar reflecting selection position
-        if let Some(sel) = app.snaps_state.selected {
-            let total = app.filtered_snaps.len().max(1);
-            let mut sb = ScrollbarState::new(total).position(sel);
-            let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight);
-            frame.render_stateful_widget(scrollbar, chunks[1], &mut sb);
-        }
-    }
-}
-
-fn draw_right(frame: &mut Frame, area: Rect, app: &App) {
-    let mut lines: Vec<Line> = Vec::new();
-    if let Some(cfg_idx) = app.configs_state.selected {
-        if let Some(cfg) = app.configs.get(cfg_idx) {
-            lines.push(Line::from(vec![Span::styled("Config: ", Style::default().add_modifier(Modifier::BOLD)), Span::raw(&cfg.name)]));
-        }
-    }
-    if let Some(s_idx) = app.snaps_state.selected {
-        if let Some(s) = app.filtered_snaps.get(s_idx) {
-            lines.push(Line::from(""));
-            lines.push(Line::from(vec![
-                Span::styled("Snapshot ", Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw(format!("#{}", s.id)),
-                Span::raw("  (config: "),
-                Span::raw(&s.config),
-                Span::raw(")"),
-            ]));
-            lines.push(Line::from(format!("User: {}", if s.user.is_empty() { "-" } else { s.user.as_str() })));
-            lines.push(Line::from(format!("Type: {}", if s.kind.is_empty() { "-" } else { s.kind.as_str() })));
-            lines.push(Line::from(format!("Cleanup: {}", if s.cleanup.is_empty() { "-" } else { s.cleanup.as_str() })));
-            lines.push(Line::from(format!("Date: {}", s.date)));
-            lines.push(Line::from(format!("Description: {}", s.description)));
-        }
-    }
-    if lines.is_empty() {
-        lines.push(Line::from(Span::styled("Select a config and snapshot", Style::default().fg(Color::DarkGray))));
-    }
-    let para = Paragraph::new(lines)
-        .wrap(Wrap { trim: true })
-        .block(THEME.block("Details").style(Style::default().bg(THEME.bg).fg(THEME.fg)));
-    frame.render_widget(para, area);
-}
+// draw_left and draw_right removed (legacy, unused)
 
 fn centered_rect(r: Rect, percent_x: u16, percent_y: u16) -> Rect {
     let vert = Layout::default()
@@ -420,60 +318,67 @@ fn draw_confirm_cleanup(frame: &mut Frame, alg: &str) {
     frame.render_widget(text, inner);
 }
 
-fn draw_help_modal(frame: &mut Frame) {
-    let area = centered_rect(frame.size(), 70, 65);
+fn draw_help_modal(frame: &mut Frame, app: &App) {
+    let area = centered_rect(frame.size(), 72, 72);
     frame.render_widget(Clear, area);
     let lines = vec![
-        Line::from("Global:"),
-        Line::from("  q  Quit  ·  r  Refresh  ·  ?  Help"),
-        Line::from("  S  Toggle sudo (may be required for snapper)"),
+        Line::from(Span::styled("[Help]", THEME.header_style())),
         Line::from(""),
-    Line::from("Mouse:"),
-    Line::from("  Wheel Up/Down  Scroll list or details"),
-    Line::from(""),
-        Line::from("Navigation:"),
-        Line::from("  Tab            Switch focus (Configs ⟷ Snapshots)"),
-        Line::from("  Up/Down        Move selection"),
-        Line::from("  PageUp/Down    Jump by 10 items"),
-        Line::from("  Home/End       First/Last item"),
+        Line::from(Span::styled("[Basics]", Style::default().add_modifier(Modifier::BOLD))),
+        Line::from("  q  Quit   ·   r  Refresh   ·   ?  Toggle this help"),
+        Line::from("  S  Toggle sudo (use if snapper needs privileges)"),
         Line::from(""),
-        Line::from("Snapshots:"),
-        Line::from("  f              Toggle fullscreen table (view more rows)"),
-        Line::from("  F / Ctrl-F     Filter snapshots (by id/date/description)"),
-    Line::from("  Enter          Open 'snapper status' overlay for selected (prev..current)"),
-    Line::from("  x              'snapper diff' between previous and selected"),
-    Line::from("  m              Mount selected snapshot"),
-    Line::from("  U              Unmount selected snapshot"),
-    Line::from("  R              Rollback to selected snapshot (confirm)"),
-    Line::from("  Y              Sync selected snapshot to Limine (logs shown)"),
-    Line::from("  K              Cleanup (enter algorithm: number|timeline|empty-pre-post; confirm)"),
-        Line::from("  c              Create snapshot (enter description)"),
-        Line::from("  e              Edit description of selected snapshot"),
-        Line::from("  d              Delete selected snapshot (with confirmation)"),
-    Line::from(""),
-    Line::from("Config management:"),
-    Line::from("  C              View config (get-config)"),
-    Line::from("  g              Edit config (form): Up/Down, Enter/e edit field, s/y save, Esc cancel"),
-    Line::from("  Q              Setup quota (requires sudo)"),
+        Line::from(Span::styled("[Navigation]", Style::default().add_modifier(Modifier::BOLD))),
+        Line::from("  Tab / Shift-Tab / ← → / [ ]  Switch config tabs"),
+        Line::from("  ↑/↓  Move selection   ·   PgUp/PgDn  Jump by 10   ·   Home/End  First/Last"),
+        Line::from("  Mouse wheel  Scroll list or details"),
         Line::from(""),
-    // removed config picker to repurpose 'g' for edit-config
+    Line::from(Span::styled("[Snapshots]", Style::default().add_modifier(Modifier::BOLD))),
+    Line::from("  Enter  Show status (prev..selected)"),
+        Line::from("  x      Show diff (prev..selected)"),
+        Line::from("  m/U    Mount / Unmount"),
+    Line::from("  R      Rollback (confirm)"),
+        Line::from("  Y      Sync to Limine"),
+        Line::from("  K      Cleanup (enter algorithm: number | timeline | empty-pre-post)"),
+        Line::from("  c/e/d  Create / Edit / Delete"),
+    Line::from("  F / Ctrl-F  Filter"),
+        Line::from("  u      Toggle bottom Userdata panel"),
         Line::from(""),
-        Line::from("Modals & overlays:"),
-    Line::from("  Esc            Close/cancel (Help, Input, Confirm, Details)"),
-        Line::from("  Input modal    Enter to submit; Esc to cancel"),
-        Line::from("  Confirm delete y to confirm; n or Esc to cancel"),
-    Line::from("  Details overlay Up/Down/PageUp/PageDown/Home/End; '/' find; n/N next/prev; Esc"),
+        Line::from(Span::styled("[Config management]", Style::default().add_modifier(Modifier::BOLD))),
+        Line::from("  C      View config (get-config)"),
+        Line::from("  g      Edit config (form): ↑/↓ select · Enter/e edit · s/y save · Esc cancel"),
+        Line::from("  Q      Setup quota"),
         Line::from(""),
-        Line::from("Notes:"),
-        Line::from("  - If snapper reports permission/DBus errors, toggle sudo (S) or run via 'make sudo-run'."),
+        Line::from(Span::styled("[Modals & overlays]", Style::default().add_modifier(Modifier::BOLD))),
+        Line::from("  Esc    Close/cancel (Help, Input, Confirm, Details)"),
+        Line::from("  Details overlay: ↑/↓/PgUp/PgDn/Home/End · '/' find · n/N next/prev · Esc"),
+        Line::from(""),
+        Line::from(Span::styled("[Notes]", Style::default().add_modifier(Modifier::BOLD))),
+        Line::from("  If you see permission/DBus errors, toggle sudo (S) or run via 'make sudo-run'."),
     ];
     let block = THEME
         .modal_block("Help")
-        .title_bottom(Line::from("Esc to close").centered());
+        .title_bottom(Line::from("↑/↓ PgUp/PgDn scroll · Esc to close").centered());
     frame.render_widget(block.clone(), area);
     let inner = block.inner(area);
-    let para = Paragraph::new(lines).wrap(Wrap { trim: true });
+
+    // Scrollable help content
+    let total_lines = lines.len().max(1);
+    let visible_h = inner.height as usize;
+    let max_scroll = total_lines.saturating_sub(visible_h);
+    let clamped_scroll = app.help_scroll.min(max_scroll as u16);
+    let mut para = Paragraph::new(lines).wrap(Wrap { trim: true });
+    para = para.scroll((clamped_scroll, 0));
     frame.render_widget(para, inner);
+
+    // Scrollbar at right (only when needed)
+    if total_lines > visible_h {
+        let mut sb = ScrollbarState::new(total_lines).position(clamped_scroll as usize);
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .track_style(Style::default().bg(THEME.header_bg))
+            .thumb_style(Style::default().fg(THEME.accent));
+        frame.render_stateful_widget(scrollbar, inner, &mut sb);
+    }
 }
 
 // ConfigPicker removed; 'g' opens form editor directly.

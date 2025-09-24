@@ -54,8 +54,6 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> 
     let mut app = app::App::new();
 
     loop {
-        terminal.draw(|f| ui::draw(f, &app))?;
-
         // poll input with a short timeout to generate UI ticks
         if event::poll(std::time::Duration::from_millis(100))? {
             match event::read()? {
@@ -65,16 +63,17 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> 
                         _ => app.on_key(key),
                     }
                 }
-                Event::Mouse(me) => {
-                    app.on_mouse(me);
-                }
-                Event::Resize(_, _) => {}
+                Event::Mouse(me) => { app.on_mouse(me); }
+                Event::Resize(_, _) => { /* will redraw immediately below */ }
                 _ => {}
             }
         } else {
             // no input -> tick
             app.on_tick();
         }
+
+        // draw after handling input/resize for immediate visual update
+        terminal.draw(|f| ui::draw(f, &app))?;
     }
 
     Ok(())

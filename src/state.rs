@@ -4,11 +4,12 @@ use std::io::Write;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
 pub struct State {
     pub use_sudo: bool,
-    pub snaps_fullscreen: bool,
     pub last_config: Option<String>,
     pub filter: Option<String>,
+    pub show_userdata: bool,
 }
 
 fn config_dir() -> PathBuf {
