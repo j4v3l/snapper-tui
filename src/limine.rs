@@ -7,8 +7,12 @@ use crate::system;
 pub struct Limine;
 
 impl Limine {
-    pub fn is_installed() -> bool { system::has_cmd("limine") && system::has_cmd("limine-install") }
-    pub fn has_sync() -> bool { system::has_cmd("limine-snapper-sync") }
+    pub fn is_installed() -> bool {
+        system::has_cmd("limine") && system::has_cmd("limine-install")
+    }
+    pub fn has_sync() -> bool {
+        system::has_cmd("limine-snapper-sync")
+    }
 
     pub fn detect_limine_conf() -> Option<PathBuf> {
         let candidates = [
@@ -19,7 +23,12 @@ impl Limine {
             "/boot/efi/EFI/limine/limine.conf",
             "/limine.conf",
         ];
-        for c in candidates { let p = PathBuf::from(c); if p.exists() { return Some(p); } }
+        for c in candidates {
+            let p = PathBuf::from(c);
+            if p.exists() {
+                return Some(p);
+            }
+        }
         None
     }
 
@@ -27,15 +36,37 @@ impl Limine {
         let mut log = String::new();
         if let Some(path) = Self::detect_limine_conf() {
             let content = fs::read_to_string(&path).unwrap_or_default();
-            if content.lines().any(|l| l.trim() == "//Snapshots" || l.trim() == "/Snapshots") {
-                log.push_str(&format!("[i] //Snapshots marker already present in {}\n", path.display()));
+            if content
+                .lines()
+                .any(|l| l.trim() == "//Snapshots" || l.trim() == "/Snapshots")
+            {
+                log.push_str(&format!(
+                    "[i] //Snapshots marker already present in {}\n",
+                    path.display()
+                ));
                 return Ok(log);
             }
-            log.push_str(&format!("[+] Adding //Snapshots marker to {}\n", path.display()));
-            let _ = system::run("sh", &["-c", &format!("printf '\n//Snapshots\n' | {} tee -a '{}' >/dev/null", if use_sudo {"sudo"} else {""}, path.display())], false);
+            log.push_str(&format!(
+                "[+] Adding //Snapshots marker to {}\n",
+                path.display()
+            ));
+            let _ = system::run(
+                "sh",
+                &[
+                    "-c",
+                    &format!(
+                        "printf '\n//Snapshots\n' | {} tee -a '{}' >/dev/null",
+                        if use_sudo { "sudo" } else { "" },
+                        path.display()
+                    ),
+                ],
+                false,
+            );
             Ok(log)
         } else {
-            log.push_str("[i] limine.conf not found in common locations. Skipping marker insertion.\n");
+            log.push_str(
+                "[i] limine.conf not found in common locations. Skipping marker insertion.\n",
+            );
             Ok(log)
         }
     }
@@ -45,33 +76,81 @@ impl Limine {
         if let Ok(opts) = system::run_string("findmnt", &["-no", "OPTIONS", "/"], false) {
             for part in opts.split(',') {
                 let mut kv = part.trim().splitn(2, '=');
-                if let (Some(k), Some(v)) = (kv.next(), kv.next()) { if k == "subvol" { let mut p = String::from("/"); p.push_str(v.trim_start_matches('/')); return p; } }
+                if let (Some(k), Some(v)) = (kv.next(), kv.next()) {
+                    if k == "subvol" {
+                        let mut p = String::from("/");
+                        p.push_str(v.trim_start_matches('/'));
+                        return p;
+                    }
+                }
             }
         }
         // Fallbacks
-        if PathBuf::from("/@/.snapshots").exists() { "/@".to_string() } else { "/".to_string() }
+        if PathBuf::from("/@/.snapshots").exists() {
+            "/@".to_string()
+        } else {
+            "/".to_string()
+        }
     }
 
     pub fn detect_esp_path() -> Option<String> {
-        if let Ok(out) = system::run_string("bootctl", &["--print-esp-path"], false) { let p = out.trim(); if !p.is_empty() { return Some(p.to_string()); } }
-        if let Ok(out) = system::run_string("findmnt", &["-ln", "-t", "vfat", "-o", "TARGET"], false) {
-            for line in out.lines() { let t = line.trim(); if t.ends_with("/efi") || t.ends_with("/boot/efi") || t == "/boot" { return Some(t.to_string()); } }
+        if let Ok(out) = system::run_string("bootctl", &["--print-esp-path"], false) {
+            let p = out.trim();
+            if !p.is_empty() {
+                return Some(p.to_string());
+            }
+        }
+        if let Ok(out) =
+            system::run_string("findmnt", &["-ln", "-t", "vfat", "-o", "TARGET"], false)
+        {
+            for line in out.lines() {
+                let t = line.trim();
+                if t.ends_with("/efi") || t.ends_with("/boot/efi") || t == "/boot" {
+                    return Some(t.to_string());
+                }
+            }
         }
         None
     }
 
-    pub fn configure_defaults(subvol_path: &str, esp_path: Option<&str>, use_sudo: bool) -> Result<String> {
+    pub fn configure_defaults(
+        subvol_path: &str,
+        esp_path: Option<&str>,
+        use_sudo: bool,
+    ) -> Result<String> {
         let mut log = String::new();
         let default_conf = "/etc/default/limine";
         if !PathBuf::from(default_conf).exists() {
             log.push_str(&format!("[+] Creating {}\n", default_conf));
-            let hdr = format!("# Auto-generated by snapper-tui on {}\n", chrono::Local::now().to_rfc3339());
-            let _ = system::run("sh", &["-c", &format!("echo {} | {} tee '{}' >/dev/null", shell_escape::escape(hdr.into()), if use_sudo {"sudo"} else {""}, default_conf)], false);
+            let hdr = format!(
+                "# Auto-generated by snapper-tui on {}\n",
+                chrono::Local::now().to_rfc3339()
+            );
+            let _ = system::run(
+                "sh",
+                &[
+                    "-c",
+                    &format!(
+                        "echo {} | {} tee '{}' >/dev/null",
+                        shell_escape::escape(hdr.into()),
+                        if use_sudo { "sudo" } else { "" },
+                        default_conf
+                    ),
+                ],
+                false,
+            );
         }
         let set = |key: &str, val: &str| {
             // Replace if exists
-            let sed_cmd = if use_sudo { "sudo sed -i -E" } else { "sed -i -E" };
-            let replace = format!("{} 's|^{}=.*|{}=\"{}\"|' '{}'", sed_cmd, key, key, val, default_conf);
+            let sed_cmd = if use_sudo {
+                "sudo sed -i -E"
+            } else {
+                "sed -i -E"
+            };
+            let replace = format!(
+                "{} 's|^{}=.*|{}=\"{}\"|' '{}'",
+                sed_cmd, key, key, val, default_conf
+            );
             let _ = system::run("sh", &["-c", &replace], false);
             // Append if missing
             let append = format!(
@@ -86,17 +165,28 @@ impl Limine {
             let _ = system::run("sh", &["-c", &append], false);
         };
         set("ROOT_SUBVOLUME_PATH", subvol_path);
-        set("ROOT_SNAPSHOTS_PATH", &format!("{}/.snapshots", subvol_path));
-        if let Some(esp) = esp_path { set("ESP_PATH", esp); }
+        set(
+            "ROOT_SNAPSHOTS_PATH",
+            &format!("{}/.snapshots", subvol_path),
+        );
+        if let Some(esp) = esp_path {
+            set("ESP_PATH", esp);
+        }
         log.push_str(&format!("[i] Set ROOT_SUBVOLUME_PATH={}\n", subvol_path));
-        if let Some(esp) = esp_path { log.push_str(&format!("[i] Set ESP_PATH={}\n", esp)); }
+        if let Some(esp) = esp_path {
+            log.push_str(&format!("[i] Set ESP_PATH={}\n", esp));
+        }
         Ok(log)
     }
 
     pub fn root_uuid() -> Result<String> {
-        let src = system::run_string("findmnt", &["-no", "SOURCE", "/"], false)?.trim().to_string();
+        let src = system::run_string("findmnt", &["-no", "SOURCE", "/"], false)?
+            .trim()
+            .to_string();
         let dev = src.split('[').next().unwrap_or(&src).trim().to_string();
-        let uuid = system::run_string("blkid", &["-s", "UUID", "-o", "value", &dev], false)?.trim().to_string();
+        let uuid = system::run_string("blkid", &["-s", "UUID", "-o", "value", &dev], false)?
+            .trim()
+            .to_string();
         Ok(uuid)
     }
 
@@ -106,14 +196,22 @@ impl Limine {
         Ok("[+] Limine installed".to_string())
     }
 
-    pub fn manual_add_entry(snapshot_id: u64, snapshot_name: &str, use_sudo: bool) -> Result<String> {
+    pub fn manual_add_entry(
+        snapshot_id: u64,
+        snapshot_name: &str,
+        use_sudo: bool,
+    ) -> Result<String> {
         let mut log = String::new();
         let snap_path = format!("/.snapshots/{}/snapshot", snapshot_id);
         if !PathBuf::from(&snap_path).exists() {
             anyhow::bail!("Snapshot directory not found at: {}", snap_path);
         }
         let find = |pattern: &str| -> Result<String> {
-            let script = format!("sudo sh -c 'find {} -maxdepth 1 -type f {} | head -n1'", shell_escape::escape(snap_path.clone().into()), pattern);
+            let script = format!(
+                "sudo sh -c 'find {} -maxdepth 1 -type f {} | head -n1'",
+                shell_escape::escape(snap_path.clone().into()),
+                pattern
+            );
             let out = system::run_string("sh", &["-c", &script], false)?;
             Ok(out.trim().to_string())
         };
@@ -123,20 +221,49 @@ impl Limine {
             anyhow::bail!("Kernel or initrd not found in snapshot");
         }
         let esp = Self::detect_esp_path().context("Could not detect ESP path")?;
-        let limine_conf = Self::detect_limine_conf().unwrap_or_else(|| PathBuf::from(format!("{}/EFI/limine/limine.conf", esp)));
+        let limine_conf = Self::detect_limine_conf()
+            .unwrap_or_else(|| PathBuf::from(format!("{}/EFI/limine/limine.conf", esp)));
         let dst_dir = format!("{}/snapshots/{}", esp, snapshot_id);
         let _ = system::run_string("sudo", &["mkdir", "-p", &dst_dir], false)?;
-        let kernel_base = std::path::Path::new(&kernel).file_name().unwrap().to_string_lossy().to_string();
-        let initrd_base = std::path::Path::new(&initrd).file_name().unwrap().to_string_lossy().to_string();
-    let _ = system::run_string("cp", &["-f", &kernel, &format!("{}/{}", dst_dir, kernel_base)], use_sudo)?;
-    let _ = system::run_string("cp", &["-f", &initrd, &format!("{}/{}", dst_dir, initrd_base)], use_sudo)?;
+        let kernel_base = std::path::Path::new(&kernel)
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        let initrd_base = std::path::Path::new(&initrd)
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        let _ = system::run_string(
+            "cp",
+            &["-f", &kernel, &format!("{}/{}", dst_dir, kernel_base)],
+            use_sudo,
+        )?;
+        let _ = system::run_string(
+            "cp",
+            &["-f", &initrd, &format!("{}/{}", dst_dir, initrd_base)],
+            use_sudo,
+        )?;
         let uuid = Self::root_uuid()?;
         let entry = format!(
             "\n/{}\n    protocol: linux\n    path: boot():/snapshots/{}/{}\n    module_path: boot():/snapshots/{}/{}\n    cmdline: root=UUID={} rootflags=subvol=/.snapshots/{}/snapshot rw\n",
             snapshot_name, snapshot_id, kernel_base, snapshot_id, initrd_base, uuid, snapshot_id
         );
-        let _ = system::run_string("sudo", &["mkdir", "-p", limine_conf.parent().unwrap().to_str().unwrap()], false)?;
-        let _ = system::run_string("mkdir", &["-p", limine_conf.parent().unwrap().to_str().unwrap()], use_sudo)?;
+        let _ = system::run_string(
+            "sudo",
+            &[
+                "mkdir",
+                "-p",
+                limine_conf.parent().unwrap().to_str().unwrap(),
+            ],
+            false,
+        )?;
+        let _ = system::run_string(
+            "mkdir",
+            &["-p", limine_conf.parent().unwrap().to_str().unwrap()],
+            use_sudo,
+        )?;
         let tee_sudo = if use_sudo { "sudo" } else { "" };
         let _ = system::run_string(
             "sh",
@@ -151,25 +278,51 @@ impl Limine {
             ],
             false,
         )?;
-        log.push_str(&format!("[+] Appended entry to {}\n", limine_conf.display()));
+        log.push_str(&format!(
+            "[+] Appended entry to {}\n",
+            limine_conf.display()
+        ));
         Ok(log)
     }
 
-    pub fn sync_snapshot_to_limine(snapshot_id: u64, snapshot_name: &str, use_sudo: bool) -> Result<String> {
-        if !Self::is_installed() { anyhow::bail!("Limine is not installed"); }
+    pub fn sync_snapshot_to_limine(
+        snapshot_id: u64,
+        snapshot_name: &str,
+        use_sudo: bool,
+    ) -> Result<String> {
+        if !Self::is_installed() {
+            anyhow::bail!("Limine is not installed");
+        }
         let mut log = String::new();
         if Self::has_sync() {
             log.push_str(&Self::ensure_snapshots_marker(use_sudo)?);
             let subvol = Self::detect_root_subvol_path();
-            log.push_str(&Self::configure_defaults(&subvol, Self::detect_esp_path().as_deref(), use_sudo)?);
+            log.push_str(&Self::configure_defaults(
+                &subvol,
+                Self::detect_esp_path().as_deref(),
+                use_sudo,
+            )?);
             log.push_str("[+] Running limine-snapper-sync\n");
             let _ = system::run_string("sudo", &["limine-snapper-sync"], false)?;
             if system::has_cmd("systemctl") {
-                let _ = system::run("sudo", &["systemctl", "enable", "--now", "limine-snapper-sync.service"], false);
+                let _ = system::run(
+                    "sudo",
+                    &[
+                        "systemctl",
+                        "enable",
+                        "--now",
+                        "limine-snapper-sync.service",
+                    ],
+                    false,
+                );
                 log.push_str("[i] Enabled limine-snapper-sync.service\n");
             }
         } else {
-            log.push_str(&Self::manual_add_entry(snapshot_id, snapshot_name, use_sudo)?);
+            log.push_str(&Self::manual_add_entry(
+                snapshot_id,
+                snapshot_name,
+                use_sudo,
+            )?);
         }
         log.push_str(&Self::limine_install(use_sudo)?);
         Ok(log)

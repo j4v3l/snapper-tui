@@ -1,22 +1,19 @@
 mod app;
-mod ui;
+mod limine;
 mod snapper;
-mod theme; // Declare the theme module
 mod state;
 mod system;
-mod limine;
+mod theme; // Declare the theme module
+mod ui;
 
-use std::io;
 use anyhow::Result;
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use ratatui::{
-    backend::CrosstermBackend,
-    Terminal,
-};
+use ratatui::{backend::CrosstermBackend, Terminal};
+use std::io;
 
 fn main() -> Result<()> {
     // Ensure terminal is restored even on panic
@@ -57,13 +54,13 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> 
         // poll input with a short timeout to generate UI ticks
         if event::poll(std::time::Duration::from_millis(100))? {
             match event::read()? {
-                Event::Key(key) => {
-                    match key.code {
-                        KeyCode::Char('q') => break,
-                        _ => app.on_key(key),
-                    }
+                Event::Key(key) => match key.code {
+                    KeyCode::Char('q') => break,
+                    _ => app.on_key(key),
+                },
+                Event::Mouse(me) => {
+                    app.on_mouse(me);
                 }
-                Event::Mouse(me) => { app.on_mouse(me); }
                 Event::Resize(_, _) => { /* will redraw immediately below */ }
                 _ => {}
             }
