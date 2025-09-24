@@ -615,21 +615,94 @@ fn draw_details_modal(frame: &mut Frame, app: &App) {
     frame.render_widget(block.clone(), area);
     let inner = block.inner(area);
 
-    // Paragraph with vertical scroll
-    let mut para = Paragraph::new(app.details_text.as_str())
-        .wrap(Wrap { trim: false })
-        .style(Style::default().bg(THEME.bg).fg(THEME.fg));
-    para = para.scroll((app.details_scroll, 0));
-    frame.render_widget(para, inner);
+    // Compute content/viewport and clamp scroll; reserve 1 col for scrollbar.
+    // Use a fixed soft wrap width to keep the scrollbar stable regardless of terminal width.
+    const FIXED_WRAP_COLS: u16 = 100;
+    let mut content_area = inner;
+    if content_area.width > 1 {
+        content_area.width = content_area.width - 1; // reserve rightmost col for scrollbar
+    }
+    // Normalize then pre-wrap at a fixed width so the number of visual lines is stable
+    let rendered_text = normalize_text_for_ui(app.details_text.as_str());
+    let prewrapped = prewrap_text(rendered_text.as_str(), FIXED_WRAP_COLS);
+    let visual_total = prewrapped.lines().count();
+    let visible_h = content_area.height as usize;
+    let max_scroll = visual_total.saturating_sub(visible_h);
+    let clamped_scroll: u16 = app.details_scroll.min(max_scroll as u16);
 
-    // Draw a thin scrollbar at right
-    let lines = app.details_lines.max(1) as usize;
-    let pos = app.details_scroll.min(app.details_lines.saturating_sub(1)) as usize;
-    let mut sb = ScrollbarState::new(lines).position(pos);
-    let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
-        .track_style(Style::default().bg(THEME.header_bg))
-        .thumb_style(Style::default().fg(THEME.accent));
-    frame.render_stateful_widget(scrollbar, inner, &mut sb);
+    // Paragraph with vertical scroll; disable additional wrapping to honor our fixed pre-wrap
+    let mut para = Paragraph::new(prewrapped).style(Style::default().bg(THEME.bg).fg(THEME.fg));
+    para = para.scroll((clamped_scroll, 0));
+    frame.render_widget(para, content_area);
+
+    // Draw scrollbar only when needed
+    if visual_total > visible_h {
+        let mut sb = ScrollbarState::new(visual_total).position(clamped_scroll as usize);
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .track_style(Style::default().bg(THEME.header_bg))
+            .thumb_style(Style::default().fg(THEME.accent));
+        frame.render_stateful_widget(scrollbar, inner, &mut sb);
+    }
+}
+
+// Normalize diff/status text for stable display in a terminal:
+// - Expand tabs to 4 spaces (diffs often contain tabs)
+// - Strip carriage returns (CR) that can cause overwriting artifacts
+// - Remove ANSI escape sequences if any slipped through
+fn normalize_text_for_ui(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut esc = false;
+    let mut ansi = false;
+    for ch in text.chars() {
+        if ansi {
+            // End ANSI on letter (rough heuristic) or 'm'
+            if ch.is_ascii_alphabetic() || ch == 'm' {
+                ansi = false;
+            }
+            continue;
+        }
+        if esc {
+            // Expect '[' then parameters...
+            if ch == '[' {
+                ansi = true;
+                esc = false;
+                continue;
+            }
+            esc = false;
+            continue;
+        }
+        match ch {
+            '\t' => out.push_str("    "),
+            '\r' => {}
+            '\u{1b}' => esc = true, // ESC
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+// Insert soft line breaks so that each line is at most `width` cells wide (unicode-aware)
+fn prewrap_text(text: &str, width: u16) -> String {
+    let maxw = width.max(1) as usize;
+    let mut out = String::with_capacity(text.len());
+    for line in text.lines() {
+        let mut current_width = 0usize;
+        for ch in line.chars() {
+            let cw = UnicodeWidthStr::width(ch.encode_utf8(&mut [0; 4]));
+            if cw == 0 {
+                out.push(ch);
+                continue;
+            }
+            if current_width + cw > maxw {
+                out.push('\n');
+                current_width = 0;
+            }
+            out.push(ch);
+            current_width += cw;
+        }
+        out.push('\n');
+    }
+    out
 }
 
 fn draw_loading_modal(frame: &mut Frame, app: &App) {

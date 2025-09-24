@@ -201,6 +201,8 @@ impl App {
                     }
                     // Fullscreen removed
                     KeyCode::Char('x') => {
+                        // Reset details scroll to avoid stale positions before opening
+                        self.details_scroll = 0;
                         self.on_diff();
                     }
                     KeyCode::Char('m') => {
@@ -289,6 +291,10 @@ impl App {
                                 };
                                 self.persist_state();
                                 self.mode = Mode::Normal;
+                                // Clamp any open details scroll to the new content length
+                                if self.details_scroll > self.details_lines.saturating_sub(1) {
+                                    self.details_scroll = self.details_lines.saturating_sub(1);
+                                }
                             }
                         }
                     }
@@ -398,10 +404,7 @@ impl App {
                     self.details_scroll = self.details_scroll.saturating_sub(1);
                 }
                 KeyCode::Down => {
-                    let max = self.details_lines.saturating_sub(1);
-                    if self.details_scroll < max {
-                        self.details_scroll = self.details_scroll.saturating_add(1);
-                    }
+                    self.details_scroll = self.details_scroll.saturating_add(1);
                 }
                 KeyCode::PageUp => {
                     self.details_scroll = self.details_scroll.saturating_sub(10);
@@ -413,7 +416,7 @@ impl App {
                     self.details_scroll = 0;
                 }
                 KeyCode::End => {
-                    self.details_scroll = self.details_lines.saturating_sub(1);
+                    self.details_scroll = u16::MAX; // draw clamps to content
                 }
                 KeyCode::Char('/') => {
                     self.start_details_search();

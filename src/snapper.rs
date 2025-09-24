@@ -365,6 +365,7 @@ impl Snapper {
             anyhow::bail!("Unknown config '{config}' (not found in /etc/snapper/configs)");
         }
         let range = format!("{}..{}", from, to);
+        // Use plain snapper diff; some setups do not allow passing extra flags.
         let out = Self::run_snapper(&["-c", config, "diff", &range], use_sudo)
             .with_context(|| format!("Failed to run snapper diff for {config} {range}"))?;
         if !out.status.success() {
