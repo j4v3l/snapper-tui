@@ -3,6 +3,7 @@ use crate::snapper::{Config, Snapper, Snapshot};
 use crate::state::State as PersistedState;
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::terminal;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::mpsc::{self, Receiver};
@@ -75,6 +76,7 @@ pub struct App {
     pub details_text: String,
     pub details_scroll: u16,
     pub details_lines: u16,
+    pub details_page_lines: u16,
     // View options (fullscreen removed)
     pub filter_text: String,
     // Animation / background work
@@ -125,6 +127,7 @@ impl App {
         s.input_cursor = 0;
         s.details_scroll = 0;
         s.details_lines = 0;
+        s.details_page_lines = 0;
         s.tick = 0;
         s.status_rx = None;
         s.snaps_rx = None;
@@ -191,12 +194,14 @@ impl App {
                         self.mode = Mode::Help;
                     }
                     KeyCode::Enter => {
+                        // Show status for selected snapshot
                         self.on_enter();
                     }
                     KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                         self.start_filter_input();
                     }
                     KeyCode::Char('F') => {
+                        // Fullscreen removed; reuse Shift+f as filter input shortcut
                         self.start_filter_input();
                     }
                     // Fullscreen removed
@@ -204,6 +209,7 @@ impl App {
                         // Reset details scroll to avoid stale positions before opening
                         self.details_scroll = 0;
                         self.on_diff();
+                        self.details_scroll = u16::MAX; // draw clamps to last page (ensures thumb bottom)
                     }
                     KeyCode::Char('m') => {
                         self.on_mount();
@@ -407,10 +413,21 @@ impl App {
                     self.details_scroll = self.details_scroll.saturating_add(1);
                 }
                 KeyCode::PageUp => {
-                    self.details_scroll = self.details_scroll.saturating_sub(10);
+                    // Step by the current visible page height; UI clamps
+                    let page = if self.details_page_lines > 0 {
+                        self.details_page_lines
+                    } else {
+                        self.estimate_details_page_lines()
+                    };
+                    self.details_scroll = self.details_scroll.saturating_sub(page);
                 }
                 KeyCode::PageDown => {
-                    self.details_scroll = self.details_scroll.saturating_add(10);
+                    let page = if self.details_page_lines > 0 {
+                        self.details_page_lines
+                    } else {
+                        self.estimate_details_page_lines()
+                    };
+                    self.details_scroll = self.details_scroll.saturating_add(page);
                 }
                 KeyCode::Home => {
                     self.details_scroll = 0;
@@ -1700,5 +1717,28 @@ impl App {
         self.configs_state.selected = Some(new);
         self.load_snapshots_for_selected();
         self.persist_state();
+    }
+}
+
+impl App {
+    // Estimate the number of visible lines in the Details modal content area (page size).
+    // This mirrors ui.rs: the Details modal is centered at ~80% height with a modal block
+    // that consumes a title line and a bottom footer line. We also reserve a row for borders.
+    // We cannot know exact theme paddings here; use conservative estimates to stay close.
+    fn estimate_details_page_lines(&self) -> u16 {
+        // Terminal height in rows
+        let (cols, rows) = terminal::size().unwrap_or((80, 24));
+        let _ = cols; // not used here, but kept for future width-aware logic
+                      // The main layout has: tabs (3), main (flex), status (1), optional userdata (7)
+                      // The Details modal overlays the whole frame and is 70% height per ui.rs.
+                      // visible_h ≈ rows * 0.70 minus modal decorations (title/footer/borders ~ 4-5 rows)
+        let modal_h = (rows as u16 * 70) / 100; // 70%
+                                                // Subtract 4 lines for title (top), footer (bottom), and borders/padding
+        let mut content_h = modal_h.saturating_sub(4);
+        // Ensure at least 3 lines to avoid zero-page
+        if content_h < 3 {
+            content_h = 3;
+        }
+        content_h
     }
 }

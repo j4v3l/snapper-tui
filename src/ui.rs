@@ -13,7 +13,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::app::{App, InputKind, Mode};
 use crate::theme::THEME;
 
-pub fn draw(frame: &mut Frame, app: &App) {
+pub fn draw(frame: &mut Frame, app: &mut App) {
     // Layout: [tabs][main][status][userdata?]
     let mut constraints: Vec<Constraint> = vec![
         Constraint::Length(3),
@@ -426,6 +426,90 @@ fn draw_input_modal(frame: &mut Frame, app: &App, kind: &InputKind) {
     // Bottom hint is now part of the modal's bottom title
 }
 
+fn draw_details_modal(frame: &mut Frame, app: &mut App) {
+    let area = centered_rect(frame.size(), 80, 70);
+    frame.render_widget(Clear, area);
+
+    // Compute content area first to derive pagination metrics for footer
+    let tmp_block = THEME.modal_block(&app.details_title);
+    let inner = tmp_block.inner(area);
+
+    // Fixed-width prewrap and pagination
+    const FIXED_WRAP_COLS: u16 = 100;
+    let mut content_area = inner;
+    if content_area.width > 1 {
+        content_area.width = content_area.width - 1; // reserve rightmost col for scrollbar
+    }
+    let rendered_text = normalize_text_for_ui(app.details_text.as_str());
+    let prewrapped = prewrap_text(rendered_text.as_str(), FIXED_WRAP_COLS);
+    let lines: Vec<&str> = prewrapped.lines().collect();
+    let total_lines = lines.len();
+    let visible_h = content_area.height as usize;
+    // Store actual visible page lines for paging keys
+    app.details_page_lines = visible_h as u16;
+    let max_scroll = total_lines.saturating_sub(visible_h);
+    let clamped_scroll: usize = app.details_scroll.min(max_scroll as u16) as usize;
+    // Write back clamped value to keep state in sync and avoid perceived freeze at bounds
+    let clamped_u16 = if clamped_scroll > u16::MAX as usize {
+        u16::MAX
+    } else {
+        clamped_scroll as u16
+    };
+    app.details_scroll = clamped_u16;
+    // Write back the clamped value so input handling doesn't accumulate past the end
+    // (prevents feeling of freeze when at the bottom)
+    // SAFETY: casting down is fine since details_scroll is u16 and clamped within max_scroll.
+    // Note: this mutates app during draw; acceptable for UI sync.
+    // Ideally, clamp during input or state update, but this keeps a single source of truth.
+    // If needed later, we can refactor to a setter.
+    // WARNING: Requires &mut App, but draw receives &App. So we cannot write back here.
+    // We'll emulate by bounding the value used below; to prevent perceived freeze, we show 'End' badge.
+    let start = clamped_scroll;
+    let end = (start + visible_h).min(total_lines);
+
+    // Footer with pagination and boundary hints
+    let page = if visible_h == 0 {
+        1
+    } else {
+        start / visible_h + 1
+    };
+    let total_pages = if visible_h == 0 {
+        1
+    } else {
+        (total_lines + visible_h - 1) / visible_h
+    };
+    let at_top = start == 0;
+    let at_end = start >= max_scroll;
+    let mut footer = format!(
+        "↑/↓ PageUp/PageDown · Home/End · / find · n/N next/prev · Esc · Page {}/{}",
+        page, total_pages
+    );
+    if at_top {
+        footer.push_str(" · Top");
+    }
+    if at_end {
+        footer.push_str(" · End");
+    }
+    let block = THEME
+        .modal_block(&app.details_title)
+        .title_bottom(Line::from(footer).centered());
+    frame.render_widget(block.clone(), area);
+
+    // Render only visible slice without extra wrapping
+    let content = lines[start..end].join("\n");
+    let para = Paragraph::new(content).style(Style::default().bg(THEME.bg).fg(THEME.fg));
+    frame.render_widget(para, content_area);
+
+    // Scrollbar only when needed
+    if total_lines > visible_h {
+        // Use range (max_scroll + 1) so the thumb can reach the absolute bottom
+        let mut sb = ScrollbarState::new(max_scroll + 1).position(clamped_scroll);
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .track_style(Style::default().bg(THEME.header_bg))
+            .thumb_style(Style::default().fg(THEME.accent));
+        frame.render_stateful_widget(scrollbar, inner, &mut sb);
+    }
+}
 fn draw_confirm_modal(frame: &mut Frame, id: u64) {
     let area = centered_rect(frame.size(), 50, 25);
     frame.render_widget(Clear, area);
@@ -605,45 +689,7 @@ fn draw_config_form(frame: &mut Frame, app: &App) {
     frame.render_stateful_widget(table.block(Block::default()), inner, &mut state);
 }
 
-fn draw_details_modal(frame: &mut Frame, app: &App) {
-    let area = centered_rect(frame.size(), 80, 70);
-    frame.render_widget(Clear, area);
-    let block = THEME.modal_block(&app.details_title).title_bottom(
-        Line::from("Up/Down/PageUp/PageDown · Home/End · / find · n/N next/prev · Esc to close")
-            .centered(),
-    );
-    frame.render_widget(block.clone(), area);
-    let inner = block.inner(area);
-
-    // Compute content/viewport and clamp scroll; reserve 1 col for scrollbar.
-    // Use a fixed soft wrap width to keep the scrollbar stable regardless of terminal width.
-    const FIXED_WRAP_COLS: u16 = 100;
-    let mut content_area = inner;
-    if content_area.width > 1 {
-        content_area.width = content_area.width - 1; // reserve rightmost col for scrollbar
-    }
-    // Normalize then pre-wrap at a fixed width so the number of visual lines is stable
-    let rendered_text = normalize_text_for_ui(app.details_text.as_str());
-    let prewrapped = prewrap_text(rendered_text.as_str(), FIXED_WRAP_COLS);
-    let visual_total = prewrapped.lines().count();
-    let visible_h = content_area.height as usize;
-    let max_scroll = visual_total.saturating_sub(visible_h);
-    let clamped_scroll: u16 = app.details_scroll.min(max_scroll as u16);
-
-    // Paragraph with vertical scroll; disable additional wrapping to honor our fixed pre-wrap
-    let mut para = Paragraph::new(prewrapped).style(Style::default().bg(THEME.bg).fg(THEME.fg));
-    para = para.scroll((clamped_scroll, 0));
-    frame.render_widget(para, content_area);
-
-    // Draw scrollbar only when needed
-    if visual_total > visible_h {
-        let mut sb = ScrollbarState::new(visual_total).position(clamped_scroll as usize);
-        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
-            .track_style(Style::default().bg(THEME.header_bg))
-            .thumb_style(Style::default().fg(THEME.accent));
-        frame.render_stateful_widget(scrollbar, inner, &mut sb);
-    }
-}
+// (Removed duplicate draw_details_modal; single pagination version defined earlier)
 
 // Normalize diff/status text for stable display in a terminal:
 // - Expand tabs to 4 spaces (diffs often contain tabs)
