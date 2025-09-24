@@ -12,6 +12,15 @@ categories:
 change-template: '- $TITLE (#$NUMBER) @$AUTHOR'
 no-changes-template: 'No user-facing changes.'
 
+# Body template for the release notes. $CHANGES will be replaced with the categorized list above.
+template: |
+  ## What’s Changed
+
+  $CHANGES
+
+  ## Contributors
+  $CONTRIBUTORS
+
 version-resolver:
   major:
     labels: ['breaking-change']
