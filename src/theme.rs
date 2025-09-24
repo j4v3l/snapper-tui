@@ -68,11 +68,25 @@ impl Theme {
 
     // inner_block removed (unused)
 
-    pub fn header_style(&self) -> Style { Style::default().fg(self.header_fg).add_modifier(Modifier::BOLD) }
-    pub fn muted_style(&self) -> Style { Style::default().fg(self.muted) }
-    pub fn highlight_style(&self) -> Style { Style::default().fg(self.highlight).add_modifier(Modifier::BOLD) }
-    pub fn warn_style(&self) -> Style { Style::default().fg(self.warn) }
-    pub fn error_style(&self) -> Style { Style::default().fg(self.error) }
+    pub fn header_style(&self) -> Style {
+        Style::default()
+            .fg(self.header_fg)
+            .add_modifier(Modifier::BOLD)
+    }
+    pub fn muted_style(&self) -> Style {
+        Style::default().fg(self.muted)
+    }
+    pub fn highlight_style(&self) -> Style {
+        Style::default()
+            .fg(self.highlight)
+            .add_modifier(Modifier::BOLD)
+    }
+    pub fn warn_style(&self) -> Style {
+        Style::default().fg(self.warn)
+    }
+    pub fn error_style(&self) -> Style {
+        Style::default().fg(self.error)
+    }
 }
 
 pub static THEME: Theme = Theme {
