@@ -26,7 +26,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints(constraints)
-        .split(frame.size());
+        .split(frame.area());
 
     // Top tabs for configs
     draw_config_tabs(frame, chunks[0], app);
@@ -70,7 +70,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     // Optional bottom userdata bar (like SnapperGUI)
     if app.show_userdata {
-        let area = chunks.last().copied().unwrap_or_else(|| frame.size());
+        let area = chunks.last().copied().unwrap_or_else(|| frame.area());
         let mut lines: Vec<Line> = Vec::new();
         if let Some(s_idx) = app.snaps_state.selected {
             if let Some(s) = app.filtered_snaps.get(s_idx) {
@@ -365,7 +365,7 @@ fn centered_rect_fixed(r: Rect, width: u16, height: u16) -> Rect {
 
 fn draw_input_modal(frame: &mut Frame, app: &App, kind: &InputKind) {
     // Use a very compact modal for Filter (similar to a password box)
-    let area = centered_rect_fixed(frame.size(), 50, 5);
+    let area = centered_rect_fixed(frame.area(), 50, 5);
     frame.render_widget(Clear, area); // clear background
     let title = match kind {
         InputKind::Create => "Create snapshot description",
@@ -418,13 +418,13 @@ fn draw_input_modal(frame: &mut Frame, app: &App, kind: &InputKind) {
             cursor_x = right_edge;
         }
         let cursor_y = input_area.y; // single-line input
-        frame.set_cursor(cursor_x, cursor_y);
+        frame.set_cursor_position((cursor_x, cursor_y));
     }
     // Bottom hint is now part of the modal's bottom title
 }
 
 fn draw_details_modal(frame: &mut Frame, app: &mut App) {
-    let area = centered_rect(frame.size(), 80, 70);
+    let area = centered_rect(frame.area(), 80, 70);
     frame.render_widget(Clear, area);
 
     // Compute content area first to derive pagination metrics for footer
@@ -508,7 +508,7 @@ fn draw_details_modal(frame: &mut Frame, app: &mut App) {
     }
 }
 fn draw_confirm_modal(frame: &mut Frame, id: u64) {
-    let area = centered_rect(frame.size(), 50, 25);
+    let area = centered_rect(frame.area(), 50, 25);
     frame.render_widget(Clear, area);
     let block = THEME
         .modal_error_block("Confirm delete")
@@ -528,7 +528,7 @@ fn draw_confirm_modal(frame: &mut Frame, id: u64) {
 }
 
 fn draw_confirm_rollback(frame: &mut Frame, id: u64) {
-    let area = centered_rect(frame.size(), 50, 25);
+    let area = centered_rect(frame.area(), 50, 25);
     frame.render_widget(Clear, area);
     let block = THEME
         .modal_error_block("Confirm rollback")
@@ -548,7 +548,7 @@ fn draw_confirm_rollback(frame: &mut Frame, id: u64) {
 }
 
 fn draw_confirm_cleanup(frame: &mut Frame, alg: &str) {
-    let area = centered_rect(frame.size(), 55, 28);
+    let area = centered_rect(frame.area(), 55, 28);
     frame.render_widget(Clear, area);
     let block = THEME
         .modal_warn_block("Confirm cleanup")
@@ -561,7 +561,7 @@ fn draw_confirm_cleanup(frame: &mut Frame, alg: &str) {
 }
 
 fn draw_help_modal(frame: &mut Frame, app: &App) {
-    let area = centered_rect(frame.size(), 72, 72);
+    let area = centered_rect(frame.area(), 72, 72);
     frame.render_widget(Clear, area);
     let lines = vec![
         Line::from(Span::styled("[Help]", THEME.header_style())),
@@ -648,7 +648,7 @@ fn draw_help_modal(frame: &mut Frame, app: &App) {
 // ConfigPicker removed; 'g' opens form editor directly.
 
 fn draw_config_form(frame: &mut Frame, app: &App) {
-    let area = centered_rect(frame.size(), 80, 70);
+    let area = centered_rect(frame.area(), 80, 70);
     frame.render_widget(Clear, area);
     let block = THEME.modal_block("Edit Config (Form)").title_bottom(
         Line::from("Up/Down select · Enter/e edit · s or y save · Esc cancel").centered(),
@@ -749,7 +749,7 @@ fn prewrap_text(text: &str, width: u16) -> String {
 }
 
 fn draw_loading_modal(frame: &mut Frame, app: &App) {
-    let area = centered_rect(frame.size(), 40, 20);
+    let area = centered_rect(frame.area(), 40, 20);
     frame.render_widget(Clear, area);
     let dots = match (app.tick / 6) % 4 {
         // animate roughly every ~600ms
