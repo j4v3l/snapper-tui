@@ -9,11 +9,17 @@ fn test_list_configs_integration() {
         Ok(cfgs) => {
             // Should not panic, and should return a Vec (possibly empty)
             assert!(cfgs.iter().all(|c| !c.name.is_empty()));
-        },
+        }
         Err(e) => {
             // Acceptable if snapper is not installed or configs missing
             let msg = e.to_string();
-            assert!(msg.contains("Failed to run snapper") || msg.contains("No such file") || msg.contains("not found") || msg.contains("permission") || msg.contains("dbus"));
+            assert!(
+                msg.contains("Failed to run snapper")
+                    || msg.contains("No such file")
+                    || msg.contains("not found")
+                    || msg.contains("permission")
+                    || msg.contains("dbus")
+            );
         }
     }
 }

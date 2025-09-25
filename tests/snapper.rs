@@ -1,6 +1,6 @@
 // Unit test scaffolding for snapper.rs
 // Note: Many functions require integration/mocking for full coverage.
-use snapper_tui::snapper::{Snapper, Config, Snapshot};
+use snapper_tui::snapper::{Config, Snapper, Snapshot};
 
 #[test]
 fn test_available_configs_fs() {
@@ -12,12 +12,16 @@ fn test_available_configs_fs() {
 #[test]
 fn test_config_exists_false() {
     // Should return false for a config that does not exist
-    assert!(!Snapper::config_exists("definitely_not_a_real_config_12345"));
+    assert!(!Snapper::config_exists(
+        "definitely_not_a_real_config_12345"
+    ));
 }
 
 #[test]
 fn test_config_struct() {
-    let c = Config { name: "test".to_string() };
+    let c = Config {
+        name: "test".to_string(),
+    };
     assert_eq!(c.name, "test");
 }
 

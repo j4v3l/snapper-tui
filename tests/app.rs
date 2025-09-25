@@ -1,6 +1,6 @@
 // Unit test scaffolding for app.rs
 // Note: Most methods require integration/mocking for full coverage.
-use snapper_tui::app::{App, ListState, Mode, InputKind, PendingOp, ConfigField};
+use snapper_tui::app::{App, ConfigField, InputKind, ListState, Mode, PendingOp};
 
 #[test]
 fn test_app_struct_default() {
@@ -21,7 +21,7 @@ fn test_list_state_default() {
 fn test_mode_default() {
     let m = Mode::default();
     match m {
-        Mode::Normal => {},
+        Mode::Normal => {}
         _ => panic!("Default mode should be Normal"),
     }
 }

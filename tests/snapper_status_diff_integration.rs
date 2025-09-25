@@ -22,7 +22,12 @@ fn test_snapshot_status_and_diff_integration() {
         Ok(s) => assert!(!s.is_empty()),
         Err(e) => {
             let msg = e.to_string();
-            assert!(msg.contains("permission") || msg.contains("not allowed") || msg.contains("Failed to run snapper") || msg.contains("Unknown config"));
+            assert!(
+                msg.contains("permission")
+                    || msg.contains("not allowed")
+                    || msg.contains("Failed to run snapper")
+                    || msg.contains("Unknown config")
+            );
         }
     }
     // Test diff
@@ -31,7 +36,12 @@ fn test_snapshot_status_and_diff_integration() {
         Ok(s) => assert!(s.len() >= 0),
         Err(e) => {
             let msg = e.to_string();
-            assert!(msg.contains("permission") || msg.contains("not allowed") || msg.contains("Failed to run snapper") || msg.contains("Unknown config"));
+            assert!(
+                msg.contains("permission")
+                    || msg.contains("not allowed")
+                    || msg.contains("Failed to run snapper")
+                    || msg.contains("Unknown config")
+            );
         }
     }
 }

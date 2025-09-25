@@ -1,7 +1,7 @@
 // Integration test for Theme block rendering methods
 // Checks that block, modal_block, modal_warn_block, and modal_error_block construct without panic.
-use snapper_tui::theme::Theme;
 use ratatui::widgets::Block;
+use snapper_tui::theme::Theme;
 
 #[test]
 fn test_theme_block_rendering_methods() {

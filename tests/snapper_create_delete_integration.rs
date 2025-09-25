@@ -23,14 +23,22 @@ fn test_config_exists_and_create_delete() {
                 // Accept Ok or permission errors
                 if let Err(e) = del_result {
                     let msg = e.to_string();
-                    assert!(msg.contains("permission") || msg.contains("not allowed") || msg.contains("Failed to run snapper"));
+                    assert!(
+                        msg.contains("permission")
+                            || msg.contains("not allowed")
+                            || msg.contains("Failed to run snapper")
+                    );
                 }
             }
-        },
+        }
         Err(e) => {
             // Acceptable if not permitted
             let msg = e.to_string();
-            assert!(msg.contains("permission") || msg.contains("not allowed") || msg.contains("Failed to run snapper"));
+            assert!(
+                msg.contains("permission")
+                    || msg.contains("not allowed")
+                    || msg.contains("Failed to run snapper")
+            );
         }
     }
 }

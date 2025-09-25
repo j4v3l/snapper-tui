@@ -15,11 +15,17 @@ fn test_list_snapshots_integration() {
         Ok(snaps) => {
             // Should not panic, and should return a Vec (possibly empty)
             assert!(snaps.iter().all(|s| s.config == *config));
-        },
+        }
         Err(e) => {
             // Acceptable if snapper is not installed or permission denied
             let msg = e.to_string();
-            assert!(msg.contains("Failed to run snapper") || msg.contains("not found") || msg.contains("permission") || msg.contains("dbus") || msg.contains("Unknown config"));
+            assert!(
+                msg.contains("Failed to run snapper")
+                    || msg.contains("not found")
+                    || msg.contains("permission")
+                    || msg.contains("dbus")
+                    || msg.contains("Unknown config")
+            );
         }
     }
 }

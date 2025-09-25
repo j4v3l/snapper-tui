@@ -27,7 +27,16 @@ fn test_modify_integration() {
     // Try to modify the snapshot description
     let result = Snapper::modify(config, snap.id, "integration test description", true);
     match result {
-        Ok(_) => println!("modify succeeded for {config}#{id}", config=config, id=snap.id),
-        Err(e) => eprintln!("modify failed for {config}#{id}: {e}", config=config, id=snap.id, e=e),
+        Ok(_) => println!(
+            "modify succeeded for {config}#{id}",
+            config = config,
+            id = snap.id
+        ),
+        Err(e) => eprintln!(
+            "modify failed for {config}#{id}: {e}",
+            config = config,
+            id = snap.id,
+            e = e
+        ),
     }
 }

@@ -1,7 +1,7 @@
 // Unit test scaffolding for theme.rs
 // Note: Only pure data/logic can be tested without UI rendering.
-use snapper_tui::theme::{Theme, THEME};
 use ratatui::style::Color;
+use snapper_tui::theme::{Theme, THEME};
 
 #[test]
 fn test_theme_struct_default() {
