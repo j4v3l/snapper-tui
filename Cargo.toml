@@ -1,3 +1,5 @@
+[lib]
+path = "src/lib.rs"
 [package]
 name = "snapper-tui"
 version = "0.1.1"
@@ -23,3 +25,4 @@ unicode-width = "0.2"
 which = "8"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 shell-escape = "0.1"
+tempfile = "3.23.0"

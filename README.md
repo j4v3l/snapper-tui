@@ -1,3 +1,13 @@
+## Testing & TDD
+
+This project now follows a Test-Driven Development (TDD) workflow:
+
+- **All new features and bugfixes must be accompanied by tests.**
+- Write or update tests in `tests/` or as module tests before implementing code changes.
+- Run tests with `cargo test`.
+- Core logic should be modular and testable; UI code may require refactoring for testability.
+
+See `tests/` for examples. Contributions without tests may be rejected.
 # Snapper TUI
 
 [![CI](https://github.com/j4v3l/snapper-tui/actions/workflows/ci.yml/badge.svg)](https://github.com/j4v3l/snapper-tui/actions/workflows/ci.yml)
