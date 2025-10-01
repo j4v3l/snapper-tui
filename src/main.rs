@@ -50,28 +50,49 @@ fn main() -> Result<()> {
 fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> {
     let mut app = app::App::new();
 
+    use std::fs::OpenOptions;
+    use std::io::Write;
+    let mut log_file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("frame_times.log")?;
+
+    let mut needs_redraw = true;
     loop {
-        // poll input with a short timeout to generate UI ticks
-        if event::poll(std::time::Duration::from_millis(100))? {
+        // poll input with a short timeout
+        if event::poll(std::time::Duration::from_millis(16))? {
             match event::read()? {
                 Event::Key(key) => match key.code {
                     KeyCode::Char('q') => break,
-                    _ => app.on_key(key),
+                    _ => {
+                        app.on_key(key);
+                        needs_redraw = true;
+                    }
                 },
                 Event::Mouse(me) => {
                     app.on_mouse(me);
-                }
-                Event::Resize(_, _) => { /* will redraw immediately below */ }
+                    needs_redraw = true;
+                },
+                Event::Resize(_, _) => {
+                    needs_redraw = true;
+                },
                 _ => {}
             }
         } else {
             // no input -> tick
             app.on_tick();
+            // Always redraw for animation
+            needs_redraw = true;
         }
 
-        // draw after handling input/resize for immediate visual update
-        terminal.draw(|f| ui::draw(f, &mut app))?;
+        if needs_redraw {
+            let draw_start = std::time::Instant::now();
+            terminal.draw(|f| ui::draw(f, &mut app))?;
+            let frame_time = draw_start.elapsed();
+            let log_line = format!("[snapper-tui] Frame time: {:?}\n", frame_time);
+            let _ = log_file.write_all(log_line.as_bytes());
+            needs_redraw = false;
+        }
     }
-
     Ok(())
 }

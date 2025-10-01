@@ -3,8 +3,8 @@ use crate::snapper::{Config, Snapper, Snapshot};
 use crate::state::State as PersistedState;
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use crossterm::terminal;
 use std::collections::HashMap;
+use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
@@ -42,7 +42,7 @@ pub enum InputKind {
 #[derive(Debug, Clone)]
 pub enum PendingOp {
     Status { from: u64, to: u64 },
-    Diff { from: u64, to: u64 },
+    DiffStream { from: u64, to: u64 },
     Mount { id: u64 },
     Umount { id: u64 },
     Rollback { id: u64 },
@@ -51,6 +51,9 @@ pub enum PendingOp {
     SetConfig,
     GetConfigForEdit,
     LimineSync { id: u64, name: String },
+    Create,
+    Modify { id: u64 },
+    Delete { id: u64 },
 }
 
 #[derive(Default)]
@@ -58,6 +61,9 @@ pub struct App {
     pub status: String,
     pub configs: Vec<Config>,
     // raw snapshots fetched from snapper (unfiltered)
+    /// All snapshots for each config, loaded at startup
+    pub all_snapshots: HashMap<String, Vec<Snapshot>>,
+    /// Current view: raw snapshots for selected config
     pub snapshots: Vec<Snapshot>,
     // filtered view
     pub filtered_snaps: Vec<Snapshot>,
@@ -114,6 +120,66 @@ pub struct ConfigField {
 }
 
 impl App {
+    /// Set self.snapshots and filtered_snaps for the currently selected config from all_snapshots
+    fn set_snapshots_for_selected(&mut self) {
+        if let Some(idx) = self.configs_state.selected {
+            if let Some(cfg) = self.configs.get(idx) {
+                self.snapshots = self
+                    .all_snapshots
+                    .get(&cfg.name)
+                    .cloned()
+                    .unwrap_or_default();
+                self.apply_filter();
+                self.snaps_state.selected = if self.filtered_snaps.is_empty() {
+                    None
+                } else {
+                    Some(0)
+                };
+                self.update_selected_snapshot_meta();
+            }
+        }
+    }
+    fn clamp_details_scroll(&mut self) {
+        if self.details_scroll > self.details_lines.saturating_sub(1) {
+            self.details_scroll = self.details_lines.saturating_sub(1);
+        }
+    }
+
+    fn apply_filter(&mut self) {
+        let filter = self.filter_text.trim().to_lowercase();
+        if filter.is_empty() {
+            self.filtered_snaps = self.snapshots.clone();
+        } else {
+            self.filtered_snaps = self
+                .snapshots
+                .iter()
+                .filter(|s| s.description.to_lowercase().contains(&filter))
+                .cloned()
+                .collect();
+        }
+    }
+
+    fn select_prev_config(&mut self) {
+        if let Some(selected) = self.configs_state.selected {
+            if selected > 0 {
+                self.configs_state.selected = Some(selected - 1);
+                self.set_snapshots_for_selected();
+            }
+        }
+    }
+
+    fn select_next_config(&mut self) {
+        if let Some(selected) = self.configs_state.selected {
+            if selected + 1 < self.configs.len() {
+                self.configs_state.selected = Some(selected + 1);
+                self.set_snapshots_for_selected();
+            }
+        }
+    }
+
+    pub fn on_mouse(&mut self, _event: crossterm::event::MouseEvent) {
+        // Mouse handling can be implemented as needed
+    }
     pub fn new() -> Self {
         let mut s = Self::default();
         // load persisted state
@@ -149,12 +215,54 @@ impl App {
         s.userdata_planned_from_to = None;
         s.userdata_inflight_seq = None;
         s.help_scroll = 0;
-        s.refresh_all();
-        // try to restore last selected config
-        if let Some(last) = persisted.last_config {
-            if let Some(idx) = s.configs.iter().position(|c| c.name == last) {
-                s.configs_state.selected = Some(idx);
-                s.load_snapshots_for_selected();
+        // Synchronously load configs and all snapshots
+        match Snapper::list_configs() {
+            Ok(configs) => {
+                s.configs = configs;
+                s.all_snapshots = HashMap::new();
+                if !s.configs.is_empty() {
+                    // Load all snapshots for every config
+                    for cfg in &s.configs {
+                        match Snapper::list_snapshots(&cfg.name, s.use_sudo) {
+                            Ok(snaps) => {
+                                s.all_snapshots.insert(cfg.name.clone(), snaps);
+                            }
+                            Err(e) => {
+                                s.status =
+                                    format!("Failed to list snapshots for {}: {e}", cfg.name);
+                            }
+                        }
+                    }
+                    // Restore last selected config if possible
+                    if let Some(last) = persisted.last_config {
+                        if let Some(idx) = s.configs.iter().position(|c| c.name == last) {
+                            s.configs_state.selected = Some(idx);
+                        }
+                    }
+                    // Default to first config if none selected
+                    if s.configs_state.selected.is_none() {
+                        s.configs_state.selected = Some(0);
+                    }
+                    // Set current snapshots from selected config
+                    if let Some(idx) = s.configs_state.selected {
+                        if let Some(cfg) = s.configs.get(idx) {
+                            s.snapshots =
+                                s.all_snapshots.get(&cfg.name).cloned().unwrap_or_default();
+                            s.apply_filter();
+                            s.snaps_state.selected = if s.filtered_snaps.is_empty() {
+                                None
+                            } else {
+                                Some(0)
+                            };
+                            s.update_selected_snapshot_meta();
+                        }
+                    }
+                } else {
+                    s.status = "No snapper configs found".into();
+                }
+            }
+            Err(e) => {
+                s.status = format!("Failed to list configs: {e}");
             }
         }
         s
@@ -204,7 +312,6 @@ impl App {
                         // Reset details scroll to avoid stale positions before opening
                         self.details_scroll = 0;
                         self.on_diff();
-                        self.details_scroll = u16::MAX; // draw clamps to last page (ensures thumb bottom)
                     }
                     KeyCode::Char('m') => {
                         self.on_mount();
@@ -325,54 +432,69 @@ impl App {
                     _ => {}
                 }
             }
-            Mode::ConfirmDelete(id) => match key.code {
-                KeyCode::Esc => {
-                    self.mode = Mode::Normal;
-                    self.status = "Delete cancelled".into();
+            Mode::ConfirmDelete(id) => {
+                let mut delete_id: Option<u64> = None;
+                match key.code {
+                    KeyCode::Esc => {
+                        self.mode = Mode::Normal;
+                        self.status = "Delete cancelled".into();
+                    }
+                    KeyCode::Char('y') => {
+                        delete_id = Some(*id);
+                        self.mode = Mode::Normal;
+                    }
+                    KeyCode::Char('n') => {
+                        self.mode = Mode::Normal;
+                        self.status = "Delete cancelled".into();
+                    }
+                    _ => {}
                 }
-                KeyCode::Char('y') => {
-                    let id = *id;
-                    self.mode = Mode::Normal;
+                if let Some(id) = delete_id {
                     self.on_delete_confirmed(id);
                 }
-                KeyCode::Char('n') => {
-                    self.mode = Mode::Normal;
-                    self.status = "Delete cancelled".into();
+            }
+            Mode::ConfirmRollback(id) => {
+                let mut rollback_id: Option<u64> = None;
+                match key.code {
+                    KeyCode::Esc => {
+                        self.mode = Mode::Normal;
+                        self.status = "Rollback cancelled".into();
+                    }
+                    KeyCode::Char('y') => {
+                        rollback_id = Some(*id);
+                        self.mode = Mode::Normal;
+                    }
+                    KeyCode::Char('n') => {
+                        self.mode = Mode::Normal;
+                        self.status = "Rollback cancelled".into();
+                    }
+                    _ => {}
                 }
-                _ => {}
-            },
-            Mode::ConfirmRollback(id) => match key.code {
-                KeyCode::Esc => {
-                    self.mode = Mode::Normal;
-                    self.status = "Rollback cancelled".into();
-                }
-                KeyCode::Char('y') => {
-                    let id = *id;
-                    self.mode = Mode::Normal;
+                if let Some(id) = rollback_id {
                     self.on_rollback_confirmed(id);
                 }
-                KeyCode::Char('n') => {
-                    self.mode = Mode::Normal;
-                    self.status = "Rollback cancelled".into();
+            }
+            Mode::ConfirmCleanup(alg) => {
+                let mut cleanup_alg: Option<String> = None;
+                match key.code {
+                    KeyCode::Esc => {
+                        self.mode = Mode::Normal;
+                        self.status = "Cleanup cancelled".into();
+                    }
+                    KeyCode::Char('y') => {
+                        cleanup_alg = Some(alg.clone());
+                        self.mode = Mode::Normal;
+                    }
+                    KeyCode::Char('n') => {
+                        self.mode = Mode::Normal;
+                        self.status = "Cleanup cancelled".into();
+                    }
+                    _ => {}
                 }
-                _ => {}
-            },
-            Mode::ConfirmCleanup(alg) => match key.code {
-                KeyCode::Esc => {
-                    self.mode = Mode::Normal;
-                    self.status = "Cleanup cancelled".into();
-                }
-                KeyCode::Char('y') => {
-                    let alg = alg.clone();
-                    self.mode = Mode::Normal;
+                if let Some(alg) = cleanup_alg {
                     self.on_cleanup_confirmed(&alg);
                 }
-                KeyCode::Char('n') => {
-                    self.mode = Mode::Normal;
-                    self.status = "Cleanup cancelled".into();
-                }
-                _ => {}
-            },
+            }
             Mode::Help => match key.code {
                 KeyCode::Esc | KeyCode::Char('q') => {
                     self.mode = Mode::Normal;
@@ -397,53 +519,59 @@ impl App {
                 }
                 _ => {}
             },
-            Mode::Details => match key.code {
-                KeyCode::Esc | KeyCode::Char('q') => {
-                    self.mode = Mode::Normal;
+            Mode::Details => {
+                match key.code {
+                    KeyCode::Esc | KeyCode::Char('q') => {
+                        self.mode = Mode::Normal;
+                    }
+                    KeyCode::Up => {
+                        self.details_scroll = self.details_scroll.saturating_sub(1);
+                        self.clamp_details_scroll();
+                    }
+                    KeyCode::Down => {
+                        self.details_scroll = self.details_scroll.saturating_add(1);
+                        self.clamp_details_scroll();
+                    }
+                    KeyCode::PageUp => {
+                        let page = if self.details_page_lines > 0 {
+                            self.details_page_lines
+                        } else {
+                            self.estimate_details_page_lines()
+                        };
+                        self.details_scroll = self.details_scroll.saturating_sub(page);
+                        self.clamp_details_scroll();
+                    }
+                    KeyCode::PageDown => {
+                        let page = if self.details_page_lines > 0 {
+                            self.details_page_lines
+                        } else {
+                            self.estimate_details_page_lines()
+                        };
+                        self.details_scroll = self.details_scroll.saturating_add(page);
+                        self.clamp_details_scroll();
+                    }
+                    KeyCode::Home => {
+                        self.details_scroll = 0;
+                    }
+                    KeyCode::End => {
+                        self.details_scroll = u16::MAX; // draw clamps to content
+                        self.clamp_details_scroll();
+                    }
+                    KeyCode::Char('/') => {
+                        self.start_details_search();
+                    }
+                    KeyCode::Char('n') => {
+                        self.find_next();
+                    }
+                    KeyCode::Char('N') => {
+                        self.find_prev();
+                    }
+                    KeyCode::Char('e') => {
+                        self.start_config_edit();
+                    }
+                    _ => {}
                 }
-                KeyCode::Up => {
-                    self.details_scroll = self.details_scroll.saturating_sub(1);
-                }
-                KeyCode::Down => {
-                    self.details_scroll = self.details_scroll.saturating_add(1);
-                }
-                KeyCode::PageUp => {
-                    // Step by the current visible page height; UI clamps
-                    let page = if self.details_page_lines > 0 {
-                        self.details_page_lines
-                    } else {
-                        self.estimate_details_page_lines()
-                    };
-                    self.details_scroll = self.details_scroll.saturating_sub(page);
-                }
-                KeyCode::PageDown => {
-                    let page = if self.details_page_lines > 0 {
-                        self.details_page_lines
-                    } else {
-                        self.estimate_details_page_lines()
-                    };
-                    self.details_scroll = self.details_scroll.saturating_add(page);
-                }
-                KeyCode::Home => {
-                    self.details_scroll = 0;
-                }
-                KeyCode::End => {
-                    self.details_scroll = u16::MAX; // draw clamps to content
-                }
-                KeyCode::Char('/') => {
-                    self.start_details_search();
-                }
-                KeyCode::Char('n') => {
-                    self.find_next();
-                }
-                KeyCode::Char('N') => {
-                    self.find_prev();
-                }
-                KeyCode::Char('e') => {
-                    self.start_config_edit();
-                }
-                _ => {}
-            },
+            }
             Mode::Loading => {
                 // Allow cancel while loading
                 match key.code {
@@ -658,6 +786,7 @@ impl App {
     }
 
     pub fn refresh_all(&mut self) {
+        // Synchronous, instant config loading
         match Snapper::list_configs() {
             Ok(configs) => {
                 self.configs = configs;
@@ -748,7 +877,8 @@ impl App {
         } else {
             "Loading"
         };
-        self.status = format!("{} snapshots for {}…", status_prefix, cfg_name);
+        // Don't add dots here, let UI animate
+        self.status = format!("{} snapshots for {}", status_prefix, cfg_name);
     }
 
     fn update_selected_snapshot_meta(&mut self) {
@@ -812,27 +942,24 @@ impl App {
             self.status = "Select a config first".into();
             return;
         };
-        match Snapper::create(
-            cfg,
-            if desc.is_empty() {
-                "Created via snapper-tui"
-            } else {
-                desc
-            },
-            self.use_sudo,
-        ) {
-            Ok(_) => {
-                self.status = format!("Created snapshot in {cfg}");
-                self.mode = Mode::Normal;
-                self.input.clear();
-                self.snaps_cache.clear();
-                self.load_snapshots_for_selected();
-            }
-            Err(e) => {
-                self.status = format!("Create failed: {e}");
-                self.mode = Mode::Normal;
-            }
-        }
+        let (tx, rx) = mpsc::channel::<Result<String>>();
+        let cfg_owned = cfg.to_string();
+        let cfg_for_msg = cfg_owned.clone();
+        let use_sudo = self.use_sudo;
+        let description = if desc.is_empty() {
+            "Created via snapper-tui".to_string()
+        } else {
+            desc.to_string()
+        };
+        thread::spawn(move || {
+            let res = Snapper::create(&cfg_owned, &description, use_sudo).map(|_| String::new());
+            let _ = tx.send(res);
+        });
+        self.status_rx = Some(rx);
+        self.pending = Some(PendingOp::Create);
+        self.loading_message = format!("Creating snapshot in {}…", cfg_for_msg);
+        self.mode = Mode::Loading;
+        self.input.clear();
     }
 
     fn start_edit(&mut self) {
@@ -857,20 +984,20 @@ impl App {
             self.status = "Select a config first".into();
             return;
         };
-        match Snapper::modify(cfg, id, desc, self.use_sudo) {
-            Ok(_) => {
-                self.status = format!("Edited snapshot #{}", id);
-                self.mode = Mode::Normal;
-                self.input.clear();
-                self.input_cursor = 0;
-                self.snaps_cache.clear();
-                self.load_snapshots_for_selected();
-            }
-            Err(e) => {
-                self.status = format!("Edit failed: {e}");
-                self.mode = Mode::Normal;
-            }
-        }
+        let (tx, rx) = mpsc::channel::<Result<String>>();
+        let cfg_owned = cfg.to_string();
+        let use_sudo = self.use_sudo;
+        let desc_owned = desc.to_string();
+        thread::spawn(move || {
+            let res = Snapper::modify(&cfg_owned, id, &desc_owned, use_sudo).map(|_| String::new());
+            let _ = tx.send(res);
+        });
+        self.status_rx = Some(rx);
+        self.pending = Some(PendingOp::Modify { id });
+        self.loading_message = format!("Editing description for #{}…", id);
+        self.mode = Mode::Loading;
+        self.input.clear();
+        self.input_cursor = 0;
     }
 
     fn start_delete_confirm(&mut self) {
@@ -889,14 +1016,17 @@ impl App {
             self.status = "Select a config first".into();
             return;
         };
-        match Snapper::delete(cfg, id, self.use_sudo) {
-            Ok(_) => {
-                self.status = format!("Deleted snapshot #{}", id);
-                self.snaps_cache.clear();
-                self.load_snapshots_for_selected();
-            }
-            Err(e) => self.status = format!("Delete failed: {e}"),
-        }
+        let (tx, rx) = mpsc::channel::<Result<String>>();
+        let cfg_owned = cfg.to_string();
+        let use_sudo = self.use_sudo;
+        thread::spawn(move || {
+            let res = Snapper::delete(&cfg_owned, id, use_sudo).map(|_| String::new());
+            let _ = tx.send(res);
+        });
+        self.status_rx = Some(rx);
+        self.pending = Some(PendingOp::Delete { id });
+        self.loading_message = format!("Deleting #{}…", id);
+        self.mode = Mode::Loading;
     }
 
     fn on_enter(&mut self) {
@@ -945,6 +1075,48 @@ impl App {
             match rx.try_recv() {
                 Ok(Ok(text)) => {
                     match self.pending.clone() {
+                        Some(PendingOp::Create) => {
+                            self.status = "Snapshot created".into();
+                            self.mode = Mode::Normal;
+                            self.snaps_cache.clear();
+                            self.refresh_all();
+                            self.status_rx = None;
+                            self.pending = None;
+                            return;
+                        }
+                        Some(PendingOp::Modify { id }) => {
+                            self.status = format!("Edited snapshot #{}", id);
+                            self.mode = Mode::Normal;
+                            self.snaps_cache.clear();
+                            self.refresh_all();
+                            self.status_rx = None;
+                            self.pending = None;
+                            return;
+                        }
+                        Some(PendingOp::Delete { id }) => {
+                            self.status = format!("Deleted snapshot #{}", id);
+                            self.mode = Mode::Normal;
+                            self.snaps_cache.clear();
+                            self.refresh_all();
+                            self.status_rx = None;
+                            self.pending = None;
+                            return;
+                        }
+                        Some(PendingOp::DiffStream { from, to }) => {
+                            // Incremental update: accept growing text; keep user position
+                            self.details_title = format!("Diff {}..{}", from, to);
+                            // Apply truncation window to avoid huge memory; keep last ~10k lines
+                            let max_lines = 10000usize;
+                            let mut lines: Vec<&str> = text.lines().collect();
+                            if lines.len() > max_lines {
+                                lines = lines.split_off(lines.len() - max_lines);
+                            }
+                            let diff_text = lines.join("\n");
+                            self.details_lines = diff_text.lines().count() as u16;
+                            self.details_text = diff_text;
+                            // Stay in Loading until channel closes or child completes; Details is also fine for viewing
+                            self.mode = Mode::Details;
+                        }
                         Some(PendingOp::Status { from, to }) => {
                             self.details_title = format!("Status {}..{}", from, to);
                             self.details_lines = text.lines().count() as u16;
@@ -952,13 +1124,7 @@ impl App {
                             self.details_scroll = 0;
                             self.mode = Mode::Details;
                         }
-                        Some(PendingOp::Diff { from, to }) => {
-                            self.details_title = format!("Diff {}..{}", from, to);
-                            self.details_lines = text.lines().count() as u16;
-                            self.details_text = text;
-                            self.details_scroll = 0;
-                            self.mode = Mode::Details;
-                        }
+                        
                         Some(PendingOp::Cleanup { algorithm }) => {
                             self.details_title = format!("Cleanup: {}", algorithm);
                             self.details_lines = text.lines().count() as u16;
@@ -1142,17 +1308,45 @@ impl App {
                     self.pending = None;
                 }
                 Ok(Err(e)) => {
-                    self.status = format!("Operation failed: {e}");
-                    self.mode = Mode::Normal;
+                    match self.pending.clone() {
+                        Some(PendingOp::Create) => {
+                            self.status = format!("Create failed: {}", e);
+                            self.mode = Mode::Normal;
+                        }
+                        Some(PendingOp::Modify { .. }) => {
+                            self.status = format!("Edit failed: {}", e);
+                            self.mode = Mode::Normal;
+                        }
+                        Some(PendingOp::Delete { .. }) => {
+                            self.status = format!("Delete failed: {}", e);
+                            self.mode = Mode::Normal;
+                        }
+                        Some(PendingOp::DiffStream { .. }) => {
+                            self.details_title = "Diff error".to_string();
+                            self.details_text = format!("Failed to load diff: {}", e);
+                            self.details_lines = self.details_text.lines().count() as u16;
+                            self.details_scroll = 0;
+                            self.mode = Mode::Details;
+                        }
+                        _ => {
+                            self.status = format!("Operation failed: {}", e);
+                            self.mode = Mode::Normal;
+                        }
+                    }
+                    // Show error in details modal
                     self.status_rx = None;
                     self.pending = None;
                 }
-                Err(mpsc::TryRecvError::Empty) => { /* still loading */ }
+                Err(mpsc::TryRecvError::Empty) => {
+                    // Still waiting for diff, do nothing
+                }
                 Err(mpsc::TryRecvError::Disconnected) => {
-                    self.status = "Status failed (disconnected)".into();
-                    self.mode = Mode::Normal;
-                    self.status_rx = None;
-                    self.pending = None;
+                    // Channel closed or panicked
+                    self.details_title = "Diff error".to_string();
+                    self.details_text = "Failed to load diff: background thread panicked or was killed".to_string();
+                    self.details_lines = self.details_text.lines().count() as u16;
+                    self.details_scroll = 0;
+                    self.mode = Mode::Details;
                 }
             }
         }
@@ -1291,17 +1485,54 @@ impl App {
         } else {
             (0, s.id)
         };
+        // Streaming diff for responsiveness
         let (tx, rx) = mpsc::channel::<Result<String>>();
         let cfg_owned = cfg.to_string();
         let use_sudo = self.use_sudo;
         thread::spawn(move || {
-            let res = Snapper::diff(&cfg_owned, from, to, use_sudo);
-            let _ = tx.send(res);
+            // Spawn child and stream stdout line-by-line
+            let mut child = match Snapper::spawn_diff_child(&cfg_owned, from, to, use_sudo) {
+                Ok(c) => c,
+                Err(e) => {
+                    let _ = tx.send(Err(e));
+                    return;
+                }
+            };
+            let mut out = String::new();
+            if let Some(stdout) = child.stdout.take() {
+                let mut reader = BufReader::new(stdout);
+                let mut buf = String::new();
+                // Send incremental chunks to UI periodically
+                let mut bytes_since_last_emit: usize = 0;
+                loop {
+                    buf.clear();
+                    let n = reader.read_line(&mut buf).unwrap_or(0);
+                    if n == 0 {
+                        break;
+                    }
+                    out.push_str(&buf);
+                    bytes_since_last_emit += n;
+                    if bytes_since_last_emit >= 32 * 1024 {
+                        let _ = tx.send(Ok(out.clone()));
+                        bytes_since_last_emit = 0;
+                    }
+                }
+            }
+            let status = child.wait();
+            if let Err(e) = status {
+                let _ = tx.send(Err(anyhow::anyhow!(e)));
+                return;
+            }
+            // Final emit
+            let _ = tx.send(Ok(out));
         });
         self.status_rx = Some(rx);
-        self.pending = Some(PendingOp::Diff { from, to });
+        self.pending = Some(PendingOp::DiffStream { from, to });
         self.loading_message = format!("Fetching diff {}..{}", from, to);
         self.details_title = format!("Diff {}..{}", from, to);
+        self.details_text.clear();
+        self.details_lines = 0;
+        self.details_scroll = 0; // start at top
         self.mode = Mode::Loading;
         self.status.clear();
     }
@@ -1628,103 +1859,12 @@ impl App {
         self.input.insert(idx, c);
         self.input_cursor += 1;
     }
-}
 
-impl App {
-    pub fn on_mouse(&mut self, me: crossterm::event::MouseEvent) {
-        use crossterm::event::{MouseButton, MouseEventKind};
-        match me.kind {
-            MouseEventKind::ScrollUp => match self.mode {
-                Mode::Details => {
-                    self.details_scroll = self.details_scroll.saturating_sub(3);
-                }
-                _ => {
-                    if let Some(sel) = self.snaps_state.selected {
-                        self.snaps_state.selected = Some(sel.saturating_sub(1));
-                        self.update_selected_snapshot_meta();
-                    }
-                }
-            },
-            MouseEventKind::ScrollDown => match self.mode {
-                Mode::Details => {
-                    self.details_scroll = self.details_scroll.saturating_add(3);
-                }
-                _ => {
-                    let len = self.filtered_snaps.len();
-                    if len > 0 {
-                        let sel = self.snaps_state.selected.unwrap_or(0);
-                        self.snaps_state.selected = Some((sel + 1).min(len - 1));
-                        self.update_selected_snapshot_meta();
-                    }
-                }
-            },
-            MouseEventKind::Down(MouseButton::Left) => {
-                // No selection-by-click mapping yet; safe no-op for now
-            }
-            _ => {}
-        }
-    }
-    fn apply_filter(&mut self) {
-        let q = self.filter_text.trim().to_lowercase();
-        if q.is_empty() {
-            self.filtered_snaps = self.snapshots.clone();
-        } else {
-            self.filtered_snaps = self
-                .snapshots
-                .iter()
-                .filter(|s| {
-                    s.description.to_lowercase().contains(&q)
-                        || s.date.to_lowercase().contains(&q)
-                        || s.kind.to_lowercase().contains(&q)
-                        || s.cleanup.to_lowercase().contains(&q)
-                        || s.user.to_lowercase().contains(&q)
-                        || s.id.to_string().contains(&q)
-                })
-                .cloned()
-                .collect();
-        }
-    }
-
-    fn select_prev_config(&mut self) {
-        let len = self.configs.len();
-        if len == 0 {
-            return;
-        }
-        let idx = self.configs_state.selected.unwrap_or(0);
-        let new = idx.saturating_sub(1);
-        self.configs_state.selected = Some(new);
-        self.load_snapshots_for_selected();
-        self.persist_state();
-    }
-    fn select_next_config(&mut self) {
-        let len = self.configs.len();
-        if len == 0 {
-            return;
-        }
-        let idx = self.configs_state.selected.unwrap_or(0);
-        let new = (idx + 1).min(len - 1);
-        self.configs_state.selected = Some(new);
-        self.load_snapshots_for_selected();
-        self.persist_state();
-    }
-}
-
-impl App {
-    // Estimate the number of visible lines in the Details modal content area (page size).
-    // This mirrors ui.rs: the Details modal is centered at ~80% height with a modal block
-    // that consumes a title line and a bottom footer line. We also reserve a row for borders.
-    // We cannot know exact theme paddings here; use conservative estimates to stay close.
     fn estimate_details_page_lines(&self) -> u16 {
-        // Terminal height in rows
-        let (cols, rows) = terminal::size().unwrap_or((80, 24));
-        let _ = cols; // not used here, but kept for future width-aware logic
-                      // The main layout has: tabs (3), main (flex), status (1), optional userdata (7)
-                      // The Details modal overlays the whole frame and is 70% height per ui.rs.
-                      // visible_h ≈ rows * 0.70 minus modal decorations (title/footer/borders ~ 4-5 rows)
-        let modal_h = (rows * 70) / 100; // 70%
-                                         // Subtract 4 lines for title (top), footer (bottom), and borders/padding
+        let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
+        let _ = cols;
+        let modal_h = (rows * 70) / 100;
         let mut content_h = modal_h.saturating_sub(4);
-        // Ensure at least 3 lines to avoid zero-page
         if content_h < 3 {
             content_h = 3;
         }

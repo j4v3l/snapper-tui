@@ -56,6 +56,17 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     };
     let left = format!("cfg: {cfg}  {snaps_label}  {sudo}{filter_hint}");
     let right = "q quit · r refresh · c create · e edit · d delete · Enter details · x diff · m mount · U umount · R rollback · K cleanup · C view-config · g edit-config (form) · Q setup-quota · Y limine-sync · F filter · Tab/Shift-Tab switch-config · [ ] switch-config · u userdata · S sudo · ? help";
+    // Animate status bar for loading/working/fetching
+    let mut status_title = app.status.clone();
+    if status_title.contains("Loading") || status_title.contains("Working") || status_title.contains("Fetching") || status_title.contains("Please wait") {
+        let dots = match (app.tick / 6) % 4 {
+            0 => "",
+            1 => ".",
+            2 => "..",
+            _ => "...",
+        };
+        status_title.push_str(dots);
+    }
     let status_line = Line::from(vec![
         Span::styled(left, Style::default()),
         Span::raw("  |  "),
@@ -64,7 +75,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let status = Paragraph::new(status_line).block(
         Block::default()
             .borders(Borders::TOP)
-            .title(app.status.as_str()),
+            .title(status_title),
     );
     frame.render_widget(status, chunks[2]);
 
@@ -293,7 +304,10 @@ fn draw_snapshots_only(frame: &mut Frame, area: Rect, app: &App) {
         // inner height available for rows = inner.height minus 1 for header
         let visible_rows: usize = inner_area.height.saturating_sub(1) as usize;
         if total > visible_rows {
-            let mut sb = ScrollbarState::new(total).position(sel);
+            let max_scroll = total.saturating_sub(visible_rows);
+            let pos = sel.min(max_scroll);
+            // Use range (max_scroll + 1) so the thumb can reach the absolute bottom
+            let mut sb = ScrollbarState::new(max_scroll + 1).position(pos);
             let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight);
             frame.render_stateful_widget(scrollbar, area, &mut sb);
         }
@@ -442,25 +456,11 @@ fn draw_details_modal(frame: &mut Frame, app: &mut App) {
     let lines: Vec<&str> = prewrapped.lines().collect();
     let total_lines = lines.len();
     let visible_h = content_area.height as usize;
-    // Store actual visible page lines for paging keys
+    app.details_lines = total_lines as u16;
     app.details_page_lines = visible_h as u16;
     let max_scroll = total_lines.saturating_sub(visible_h);
-    let clamped_scroll: usize = app.details_scroll.min(max_scroll as u16) as usize;
-    // Write back clamped value to keep state in sync and avoid perceived freeze at bounds
-    let clamped_u16 = if clamped_scroll > u16::MAX as usize {
-        u16::MAX
-    } else {
-        clamped_scroll as u16
-    };
-    app.details_scroll = clamped_u16;
-    // Write back the clamped value so input handling doesn't accumulate past the end
-    // (prevents feeling of freeze when at the bottom)
-    // SAFETY: casting down is fine since details_scroll is u16 and clamped within max_scroll.
-    // Note: this mutates app during draw; acceptable for UI sync.
-    // Ideally, clamp during input or state update, but this keeps a single source of truth.
-    // If needed later, we can refactor to a setter.
-    // WARNING: Requires &mut App, but draw receives &App. So we cannot write back here.
-    // We'll emulate by bounding the value used below; to prevent perceived freeze, we show 'End' badge.
+    let clamped_scroll = app.details_scroll.min(max_scroll as u16) as usize;
+    app.details_scroll = clamped_scroll as u16;
     let start = clamped_scroll;
     let end = (start + visible_h).min(total_lines);
 
@@ -561,68 +561,102 @@ fn draw_confirm_cleanup(frame: &mut Frame, alg: &str) {
 }
 
 fn draw_help_modal(frame: &mut Frame, app: &App) {
-    let area = centered_rect(frame.area(), 72, 72);
+    let area = centered_rect(frame.area(), 72, 68);
     frame.render_widget(Clear, area);
-    let lines = vec![
-        Line::from(Span::styled("[Help]", THEME.header_style())),
-        Line::from(""),
-        Line::from(Span::styled(
-            "[Basics]",
+
+    // Build aligned two-column content using fixed-width command column
+    let colw: usize = 26;
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::from(Span::styled("[Help]", THEME.header_style())));
+    lines.push(Line::from(""));
+
+    let mut add_section = |
+        title: &'static str,
+        rows: &'static [(&'static str, &'static str)],
+    | {
+        lines.push(Line::from(Span::styled(
+            title,
             Style::default().add_modifier(Modifier::BOLD),
-        )),
-        Line::from("  q  Quit   ·   r  Refresh   ·   ?  Toggle this help"),
-        Line::from("  S  Toggle sudo (use if snapper needs privileges)"),
-        Line::from(""),
-        Line::from(Span::styled(
-            "[Navigation]",
-            Style::default().add_modifier(Modifier::BOLD),
-        )),
-        Line::from("  Tab / Shift-Tab / ← → / [ ]  Switch config tabs"),
-        Line::from("  ↑/↓  Move selection   ·   PgUp/PgDn  Jump by 10   ·   Home/End  First/Last"),
-        Line::from("  Mouse wheel  Scroll list or details"),
-        Line::from(""),
-        Line::from(Span::styled(
-            "[Snapshots]",
-            Style::default().add_modifier(Modifier::BOLD),
-        )),
-        Line::from("  Enter  Show status (prev..selected)"),
-        Line::from("  x      Show diff (prev..selected)"),
-        Line::from("  m/U    Mount / Unmount"),
-        Line::from("  R      Rollback (confirm)"),
-        Line::from("  Y      Sync to Limine"),
-        Line::from("  K      Cleanup (enter algorithm: number | timeline | empty-pre-post)"),
-        Line::from("  c/e/d  Create / Edit / Delete"),
-        Line::from("  F / Ctrl-F  Filter"),
-        Line::from("  u      Toggle bottom Userdata panel"),
-        Line::from(""),
-        Line::from(Span::styled(
-            "[Config management]",
-            Style::default().add_modifier(Modifier::BOLD),
-        )),
-        Line::from("  C      View config (get-config)"),
-        Line::from(
-            "  g      Edit config (form): ↑/↓ select · Enter/e edit · s/y save · Esc cancel",
-        ),
-        Line::from("  Q      Setup quota"),
-        Line::from(""),
-        Line::from(Span::styled(
-            "[Modals & overlays]",
-            Style::default().add_modifier(Modifier::BOLD),
-        )),
-        Line::from("  Esc    Close/cancel (Help, Input, Confirm, Details)"),
-        Line::from("  Details overlay: ↑/↓/PgUp/PgDn/Home/End · '/' find · n/N next/prev · Esc"),
-        Line::from(""),
-        Line::from(Span::styled(
-            "[Notes]",
-            Style::default().add_modifier(Modifier::BOLD),
-        )),
-        Line::from(
-            "  If you see permission/DBus errors, toggle sudo (S) or run via 'make sudo-run'.",
-        ),
-    ];
+        )));
+        for (cmd, desc) in rows.iter() {
+            let padded = format!("{:width$}", *cmd, width = colw);
+            lines.push(Line::from(vec![
+                Span::styled(padded, THEME.highlight_style()),
+                Span::raw("  "),
+                Span::raw(*desc),
+            ]));
+        }
+        lines.push(Line::from(""));
+    };
+
+    add_section(
+        "Basics",
+        &[("q", "Quit"), ("r", "Refresh"), ("?", "Toggle help"), ("S", "Toggle sudo")],
+    );
+
+    add_section(
+        "Navigation",
+        &[
+            ("Tab / Shift-Tab / [ ] / ← →", "Switch config"),
+            ("↑ / ↓", "Move selection"),
+            ("PgUp / PgDn", "Jump by 10"),
+            ("Home / End", "First / Last"),
+            ("Mouse wheel", "Scroll list or details"),
+        ],
+    );
+
+    add_section(
+        "Snapshots",
+        &[
+            ("Enter", "Status (prev..selected)"),
+            ("x", "Diff (prev..selected)"),
+            ("m / U", "Mount / Unmount"),
+            ("R", "Rollback (confirm)"),
+            ("Y", "Limine sync"),
+            (
+                "K",
+                "Cleanup (number | timeline | empty-pre-post)",
+            ),
+            ("c / e / d", "Create / Edit / Delete"),
+            ("F / Ctrl-F", "Filter"),
+            ("u", "Toggle Userdata panel"),
+        ],
+    );
+
+    add_section(
+        "Config",
+        &[
+            ("C", "View config (get-config)"),
+            (
+                "g",
+                "Edit form: ↑/↓ select · Enter/e edit · s/y save · Esc cancel",
+            ),
+            ("Q", "Setup quota"),
+        ],
+    );
+
+    add_section(
+        "Modals",
+        &[
+            ("Esc", "Close/cancel (Help, Input, Confirm, Details)"),
+            (
+                "Details overlay",
+                "↑/↓/PgUp/PgDn/Home/End · / find · n/N next/prev",
+            ),
+        ],
+    );
+
+    add_section(
+        "Notes",
+        &[(
+            "Note",
+            "If permission/DBus errors: toggle sudo (S) or run 'make sudo-run'.",
+        )],
+    );
+
     let block = THEME
         .modal_block("Help")
-        .title_bottom(Line::from("↑/↓ PgUp/PgDn scroll · Esc to close").centered());
+        .title_bottom(Line::from("↑/↓ PgUp/PgDn scroll  ·  Esc close").centered());
     frame.render_widget(block.clone(), area);
     let inner = block.inner(area);
 
@@ -637,7 +671,8 @@ fn draw_help_modal(frame: &mut Frame, app: &App) {
 
     // Scrollbar at right (only when needed)
     if total_lines > visible_h {
-        let mut sb = ScrollbarState::new(total_lines).position(clamped_scroll as usize);
+        // Use range (max_scroll + 1) so the thumb can reach the absolute bottom
+        let mut sb = ScrollbarState::new(max_scroll + 1).position(clamped_scroll as usize);
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
             .track_style(Style::default().bg(THEME.header_bg))
             .thumb_style(Style::default().fg(THEME.accent));

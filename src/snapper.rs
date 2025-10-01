@@ -1,5 +1,8 @@
 use anyhow::{Context, Result};
-use std::{fs, process::Command};
+use std::{
+    fs,
+    process::{Command, Stdio},
+};
 
 #[derive(Debug, Clone)]
 pub struct Snapshot {
@@ -33,6 +36,39 @@ impl Snapper {
         }
         .context("Failed to spawn snapper")?;
         Ok(out)
+    }
+
+    /// Spawn a streaming `snapper diff` child process with piped stdout/stderr.
+    /// The caller is responsible for reading from `child.stdout` and waiting on the child.
+    pub fn spawn_diff_child(
+        config: &str,
+        from: u64,
+        to: u64,
+        use_sudo: bool,
+    ) -> Result<std::process::Child> {
+        if !Self::config_exists(config) {
+            anyhow::bail!(
+                "Unknown config '{config}' (not found in /etc/snapper/configs)"
+            );
+        }
+        let range = format!("{}..{}", from, to);
+        let mut cmd = if use_sudo {
+            let mut c = Command::new("sudo");
+            c.arg("-n")
+                .arg("snapper")
+                .args(["-c", config, "diff", &range]);
+            c
+        } else {
+            let mut c = Command::new("snapper");
+            c.args(["-c", config, "diff", &range]);
+            c
+        };
+        let child = cmd
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .with_context(|| format!("Failed to spawn streaming snapper diff for {config} {range}"))?;
+        Ok(child)
     }
     pub fn available_configs_fs() -> Vec<String> {
         let mut v = Vec::new();
@@ -357,20 +393,7 @@ impl Snapper {
         Ok(())
     }
 
-    pub fn diff(config: &str, from: u64, to: u64, use_sudo: bool) -> Result<String> {
-        if !Self::config_exists(config) {
-            anyhow::bail!("Unknown config '{config}' (not found in /etc/snapper/configs)");
-        }
-        let range = format!("{}..{}", from, to);
-        // Use plain snapper diff; some setups do not allow passing extra flags.
-        let out = Self::run_snapper(&["-c", config, "diff", &range], use_sudo)
-            .with_context(|| format!("Failed to run snapper diff for {config} {range}"))?;
-        if !out.status.success() {
-            let err = String::from_utf8_lossy(&out.stderr);
-            anyhow::bail!("snapper diff failed: {err}");
-        }
-        Ok(String::from_utf8_lossy(&out.stdout).to_string())
-    }
+    // Legacy non-streaming diff removed in favor of spawn_diff_child
 
     pub fn mount(config: &str, id: u64, use_sudo: bool) -> Result<String> {
         if !Self::config_exists(config) {
